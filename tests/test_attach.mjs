@@ -14,12 +14,18 @@ import { dirname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { zip } from '../app/assets/zip.js';
-import { extractAttachment, SUPPORTED, MAX_BYTES } from '../app/assets/attach.js';
+import { extractAttachment, SUPPORTED, MAX_BYTES, MAX_COLS, MAX_CELLS } from '../app/assets/attach.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..');
 const FIX = join(HERE, 'fixtures');
-const REAL_XLSX = '/home/user/kihasa-indicator-new/source/지역사회보장지표.xlsx';
+/* 엑셀 라이브러리(openpyxl)가 실제로 써 낸 파일. 손으로 조립한 위 고정 자료와 달리
+   시트 이름·열 너비·빈 칸 배치가 진짜 문서를 그대로 옮긴 것이라, 표가 어긋나는지
+   보는 데 쓴다. tools/make_xlsx_fixture.py로 다시 만든다. */
+const REAL_XLSX = join(FIX, 'real_excel.xlsx');
+/* 원본 전체(192시트·7.6MB)는 저장소에 두지 않는다. 있으면 덤으로 더 본다. */
+const HUGE_XLSX = process.env.RSSP_REAL_XLSX
+  || '/home/user/kihasa-indicator-new/source/지역사회보장지표.xlsx';
 
 mkdirSync(FIX, { recursive: true });
 
@@ -68,6 +74,18 @@ const HTML = `<!doctype html><html><head><title>제목</title>
 <tr><td>예산</td><td>100</td><td>200</td></tr></table>
 <ul><li>항목 하나</li><li>항목 둘</li></ul></body></html>`;
 
+/**
+ * 망가진 HTML. 셋 다 예전에는 추출을 통째로 뻗게 하거나 메모리를 다 먹었다.
+ * - 범위 밖 숫자 참조 → String.fromCodePoint가 RangeError를 던졌다
+ * - colspan="5000000" → 500만 칸짜리 배열
+ * - 표 안의 표 → 겉 표를 담고 또 속 표를 담아 두 번 실렸다
+ */
+const EDGE_HTML = '<!doctype html><html><body>'
+  + '<p>범위밖 &#999999999; 16진범위밖 &#x110000; 이모지 &#x1F600; 따옴표 &#39;</p>'
+  + '<table><tr><td colspan="5000000">넓다</td></tr><tr><td>좁다</td></tr></table>'
+  + '<table><tr><td>겉<table><tr><td>속</td></tr></table></td></tr></table>'
+  + '</body></html>';
+
 /** 최소 OOXML 엑셀. 시트 차례는 workbook.xml + rels로만 정해진다. */
 async function makeXlsx() {
   const files = new Map();
@@ -106,6 +124,25 @@ async function makeXlsx() {
     '<?xml version="1.0" encoding="UTF-8"?><worksheet><sheetData>'
     + '<row r="1"><c r="A1" t="inlineStr"><is><t>왼쪽</t></is></c>'
     + '<c r="AA1" t="inlineStr"><is><t>스물일곱째</t></is></c></row>'
+    + '</sheetData></worksheet>');
+  return zip(files, []);
+}
+
+/**
+ * 망가진 엑셀. 칸 이름 `ZZZZZZ1`은 열 인덱스가 3억이 넘어 예전에는
+ * `RangeError: Invalid array length`로 뻗었다. 셀 안 줄바꿈(`&#10;`)도 함께 본다.
+ */
+async function makeBadXlsx() {
+  const files = new Map();
+  files.set('xl/workbook.xml',
+    '<workbook><sheets><sheet name="망가진시트" r:id="rId1"/></sheets></workbook>');
+  files.set('xl/_rels/workbook.xml.rels',
+    '<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>');
+  files.set('xl/sharedStrings.xml', '<sst><si><t>첫줄&#10;둘째줄</t></si></sst>');
+  files.set('xl/worksheets/sheet1.xml',
+    '<worksheet><sheetData>'
+    + '<row r="1"><c r="A1" t="s"><v>0</v></c>'
+    + '<c r="ZZZZZZ1" t="inlineStr"><is><t>먼칸</t></is></c></row>'
     + '</sheetData></worksheet>');
   return zip(files, []);
 }
@@ -209,6 +246,8 @@ async function inBrowser() {
       return {
         dom: typeof DOMParser !== 'undefined',
         html: await grab(`${root}/tests/fixtures/sample.html`, 'sample.html'),
+        edge: await grab(`${root}/tests/fixtures/edge.html`, 'edge.html'),
+        bad: await grab(`${root}/tests/fixtures/bad.xlsx`, 'bad.xlsx'),
         xlsx: await grab(`${root}/tests/fixtures/mini.xlsx`, 'mini.xlsx'),
         hwpx: await grab(`${root}/tests/fixtures/mini.hwpx`, 'mini.hwpx'),
         png: await grab(`${root}/tests/fixtures/dot.png`, 'dot.png'),
@@ -232,6 +271,15 @@ async function inBrowser() {
       JSON.stringify(out.xlsx.tables[0]));
     check('브라우저 hwpx', out.hwpx.tables.length === 1 && out.hwpx.text.includes('지역 개관'),
       JSON.stringify(out.hwpx.text));
+    // DOMParser 갈래도 망가진 html에 뻗거나 메모리를 다 먹으면 안 된다
+    const e = out.edge;
+    check('브라우저 망가진 html 이모지', e.text.includes('이모지 😀'), JSON.stringify(e.text));
+    check('브라우저 망가진 html 표 둘(중첩 표 한 번만)', e.tables.length === 2, `${e.tables.length}개`);
+    check('브라우저 colspan 폭주 상한', e.tables[0][0].length === MAX_COLS,
+      `${e.tables[0][0].length}열`);
+    check('브라우저 xlsx 망가진 칸 이름', out.bad.tables.length === 1
+      && out.bad.tables[0][0][0] === '첫줄\n둘째줄', JSON.stringify(out.bad.tables));
+
     const back = Uint8Array.from(Buffer.from(out.png.inline.data, 'base64'));
     check('브라우저 btoa 왕복', back.length === PNG.length && back.every((b, i) => b === PNG[i]),
       `${back.length}바이트`);
@@ -344,20 +392,34 @@ async function main() {
   check('xlsx 두 자리 열(AA)', x.tables[1][0].length === 27 && x.tables[1][0][26] === '스물일곱째',
     `${x.tables[1][0].length}열`);
 
-  // ── 실물 xlsx
-  if (existsSync(REAL_XLSX)) {
+  // ── 엑셀 라이브러리가 써 낸 xlsx (저장소 안 고정 자료)
+  {
     const raw = readFileSync(REAL_XLSX);
-    const real = await extractAttachment(new File([raw], '지역사회보장지표.xlsx'));
-    check('실물 xlsx 시트 하나 이상', real.tables.length >= 1, `${real.tables.length}개`);
+    const real = await extractAttachment(new File([raw], 'real_excel.xlsx'));
+    check('실제 xlsx 시트 둘 이상', real.tables.length >= 2, `${real.tables.length}개`);
     const first = real.tables[0];
-    check('실물 xlsx 첫 시트 10행 이상', first.length >= 10, `${first.length}행`);
+    check('실제 xlsx 첫 시트 10행 이상', first.length >= 10, `${first.length}행`);
     let ragged = 0;
     real.tables.forEach((table, i) => { if (widths(table).length !== 1) ragged = i + 1; });
-    check('실물 xlsx 모든 표의 열 수 균일', ragged === 0, `${ragged}번째 표가 어긋난다`);
-    check('실물 xlsx 첫 시트 이름', real.text.includes('지표개요'), '요약에 시트 이름이 없다');
-    check('실물 xlsx 값이 들어옴', first.flat().some((c) => c.includes('돌봄')), '공유문자열이 비었다');
+    check('실제 xlsx 모든 표의 열 수 균일', ragged === 0, `${ragged}번째 표가 어긋난다`);
+    check('실제 xlsx 시트 이름', real.text.includes('지표개요') && real.text.includes('데이터구성'),
+      '요약에 시트 이름이 없다');
+    check('실제 xlsx 값이 들어옴', first.flat().some((c) => c.includes('돌봄')), '글자가 비었다');
+    check('실제 xlsx 머리행', first[0][0] === '영역명' && first[0].length === 11,
+      JSON.stringify(first[0]).slice(0, 120));
+  }
+
+  // ── 원본 전체(192시트). 저장소에 없어 있을 때만 덤으로 본다
+  if (existsSync(HUGE_XLSX)) {
+    const raw = readFileSync(HUGE_XLSX);
+    const huge = await extractAttachment(new File([raw], '지역사회보장지표.xlsx'));
+    check('큰 xlsx 시트 여럿', huge.tables.length >= 2, `${huge.tables.length}개`);
+    let ragged = 0;
+    huge.tables.forEach((table, i) => { if (widths(table).length !== 1) ragged = i + 1; });
+    check('큰 xlsx 모든 표의 열 수 균일', ragged === 0, `${ragged}번째 표가 어긋난다`);
   } else {
-    check('실물 xlsx', false, `${REAL_XLSX}가 없다`);
+    console.log(`  · 원본 전체 xlsx는 건너뜀 — ${HUGE_XLSX} 없음`
+      + ' (RSSP_REAL_XLSX 로 경로를 줄 수 있다)');
   }
 
   // ── pptx
@@ -387,6 +449,56 @@ async function main() {
   check('html colspan 자리 벌림', h.tables[0][0][1] === '2026년' && h.tables[0][0][2] === '',
     JSON.stringify(h.tables[0][0]));
   check('html 표는 본문에서 뺌', !h.text.includes('예산'), '표가 본문에도 남았다');
+
+  // ── 망가진 html (뻗지 않고 뽑아 내야 한다)
+  const edge = await extractAttachment(fixture('edge.html', EDGE_HTML));
+  check('html 범위 밖 숫자 참조를 원문으로 둠', edge.text.includes('&#999999999;')
+    && edge.text.includes('&#x110000;'), JSON.stringify(edge.text));
+  check('html 이모지 숫자 참조 해독', edge.text.includes('이모지 😀'), JSON.stringify(edge.text));
+  check('html &#39; 해독', edge.text.includes("따옴표 '"), JSON.stringify(edge.text));
+  check('html 표 둘(중첩 표를 두 번 담지 않음)', edge.tables.length === 2,
+    `${edge.tables.length}개`);
+  check('html colspan 폭주를 상한에서 끊음', edge.tables[0][0].length === MAX_COLS,
+    `${edge.tables[0][0].length}열`);
+  check('html colspan 폭주 뒤 행도 자리를 맞춤',
+    widths(edge.tables[0]).length === 1 && edge.tables[0][1][0] === '좁다',
+    JSON.stringify(edge.tables[0].map((r) => r[0])));
+  check('html 중첩 표 내용', edge.tables[1].flat().join(' ').includes('겉'),
+    JSON.stringify(edge.tables[1]));
+
+  // ── 망가진 xlsx
+  const bad = await extractAttachment(fixture('bad.xlsx', await makeBadXlsx()));
+  check('xlsx 망가진 칸 이름에도 안 뻗음', bad.tables.length === 1 && bad.tables[0].length === 1,
+    JSON.stringify(bad.tables));
+  check('xlsx 망가진 칸 이름 폭을 가둠', bad.tables[0][0].length <= 3,
+    `${bad.tables[0][0].length}열`);
+  check('xlsx 셀 안 &#10; 줄바꿈 해독', bad.tables[0][0][0] === '첫줄\n둘째줄',
+    JSON.stringify(bad.tables[0][0][0]));
+  check('xlsx 먼 칸 값도 살아 있음', bad.tables[0][0].includes('먼칸'),
+    JSON.stringify(bad.tables[0][0]));
+
+  // ── 표 상한을 넘긴 엑셀은 note가 담은 수를 말해야 한다(191개 중 14개를 담고 191개라 하면 거짓말)
+  const many = new Map();
+  const sheets = [];
+  for (let s = 1; s <= 30; s += 1) {
+    sheets.push(`<sheet name="시트${s}" r:id="r${s}"/>`);
+    // r 속성 없이 차례대로 놓는다 — 40열 × 60행 = 시트마다 2400칸
+    many.set(`xl/worksheets/sheet${s}.xml`, `<worksheet><sheetData>${
+      Array.from({ length: 60 }, (_, r) => `<row r="${r + 1}">${
+        Array.from({ length: 40 }, (__, c) => `<c><v>${r * 40 + c + 1}</v></c>`).join('')
+      }</row>`).join('')}</sheetData></worksheet>`);
+  }
+  many.set('xl/workbook.xml', `<workbook><sheets>${sheets.join('')}</sheets></workbook>`);
+  many.set('xl/_rels/workbook.xml.rels', `<Relationships>${
+    Array.from({ length: 30 }, (_, s) => `<Relationship Id="r${s + 1}" `
+      + `Target="worksheets/sheet${s + 1}.xml"/>`).join('')}</Relationships>`);
+  const big = await extractAttachment(new File([await zip(many, [])], 'big.xlsx'));
+  const bigCells = big.tables.reduce((sum, t) => sum + t.length * t[0].length, 0);
+  check('xlsx 표 상한 지킴', bigCells <= MAX_CELLS + 40, `${bigCells}칸`);
+  check('xlsx 잘렸으면 note가 담은 시트 수를 말함',
+    big.tables.length < 30 && big.note.includes(`${big.tables.length}개만`),
+    `표 ${big.tables.length}개인데 note가 "${big.note}"`);
+  check('xlsx 잘림을 text에도 적음', big.text.includes('잘렸다'), JSON.stringify(big.text.slice(-60)));
 
   // ── hwpx
   const w = got.get('mini.hwpx');

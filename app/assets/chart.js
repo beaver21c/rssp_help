@@ -60,6 +60,7 @@ export function textBox(t) {
 
 /* 배치 상수 — 논리 픽셀(scale 을 곱하기 전) */
 const W = 980;
+const MIN_W = 560;        // 범례·머리글이 겹치지 않는 최소 너비
 const PAD = 20;
 const HEAD = 78;          // 제목 영역 높이
 const ROW = 104;          // 지표 한 줄 높이
@@ -83,6 +84,8 @@ export function layoutChart(rows, opts) {
   const o = opts || {};
   if (!Array.isArray(rows) || !rows.length) throw new Error('그릴 지표 결과가 없다');
   const width = o.width || W;
+  /* 이보다 좁으면 범례·머리글이 서로 밀려 그림 밖으로 나간다. 말없이 망가뜨리지 않는다 */
+  if (!Number.isFinite(width) || width < MIN_W) throw new Error(`그림 너비는 ${MIN_W} 이상이어야 한다`);
   const scale = o.scale || 2;
   const plotX0 = Math.round(width * (PLOT_X0 / W));
   const plotX1 = width - PAD;
@@ -140,7 +143,10 @@ export function layoutChart(rows, opts) {
   rows.forEach((r, i) => {
     const top = HEAD + i * ROW;
     const axisY = top + 40;
-    const has = r.n > 0 && r.min != null && r.max != null;
+    /* 유한한 수가 아니면(NaN·Infinity·문자열) 좌표가 통째로 NaN이 되어 그림이 깨진다.
+       그런 줄은 값이 없는 줄과 똑같이 안내 문구로 대신한다 */
+    const fin = (v) => typeof v === 'number' && Number.isFinite(v);
+    const has = r.n > 0 && fin(r.min) && fin(r.max) && fin(r.q1) && fin(r.q3) && fin(r.avg);
 
     /* 가운데 칸(우리 값·평균)의 실제 폭만큼 왼쪽 칸을 줄여 글자가 부딪히지 않게 한다 */
     const mineText = fmtRef(r.mine);
@@ -178,7 +184,7 @@ export function layoutChart(rows, opts) {
       ops.push({ op: 'rect', x: Math.min(xQ1, xQ3), y: axisY - 11, w: Math.max(1, Math.abs(xQ3 - xQ1)), h: 22, fill: COLORS.iqr });
       line(xMin, axisY, xMax, axisY, COLORS.whisker, 2);                    // 상자 위에 다시 그어 선을 살린다
       ops.push({ op: 'circle', x: sx(r.avg), y: axisY, r: 6, fill: COLORS.avg, stroke: '#fff' });
-      if (r.mine != null) ops.push({ op: 'diamond', x: sx(r.mine), y: axisY, r: 7.5, fill: COLORS.target, stroke: '#fff' });
+      if (fin(r.mine)) ops.push({ op: 'diamond', x: sx(r.mine), y: axisY, r: 7.5, fill: COLORS.target, stroke: '#fff' });
 
       /* 분포 요약 — 여섯 칸으로 나눠 칸 가운데에 놓아 겹치지 않게 한다 */
       const cells = [['Min', fmtRef(r.min)], ['Q1', fmtRef(r.q1)], ['평균', fmtRef(r.avg)],
@@ -197,11 +203,12 @@ export function layoutChart(rows, opts) {
     if (i < rows.length - 1) line(PAD, top + ROW - 4, width - PAD, top + ROW - 4, COLORS.rule, 1);
   });
 
-  /* 표주 — 계약에 못박힌 문장 */
+  /* 표주 — 계약에 못박힌 문장. 말줄임을 하면 안 되는 자리라, 좁으면 글자를 줄여 통째로 넣는다 */
   line(PAD, height - FOOT + 6, width - PAD, height - FOOT + 6, COLORS.rule, 1);
-  T(PAD, height - 12, '※ 자료：보건복지부·한국보건사회연구원, 「지역사회보장지표」. ' +
-    '값은 지표별 최신연도 기준이며, 평균은 시·군·구 단순평균임.', 9.5, COLORS.caption, 'left',
-  { line: 'note' });
+  const note = '※ 자료：보건복지부·한국보건사회연구원, 「지역사회보장지표」. ' +
+    '값은 지표별 최신연도 기준이며, 평균은 시·군·구 단순평균임.';
+  const noteSize = Math.min(9.5, (width - PAD * 2) / textWidth(note, 1));
+  T(PAD, height - 12, note, noteSize, COLORS.caption, 'left', { line: 'note' });
 
   return { width, height, scale, background: COLORS.bg, font: FONT, ops, rows: geo };
 }

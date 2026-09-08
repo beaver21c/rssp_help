@@ -1,3 +1,6 @@
-# 시험용 파일은 test_attach.mjs가 돌 때마다 새로 만든다. 저장소에 담지 않는다.
+# 시험용 파일은 대부분 test_attach.mjs가 돌 때마다 새로 만든다. 저장소에 담지 않는다.
 *
 !.gitignore
+# 다만 real_excel.xlsx는 엑셀 라이브러리가 써 낸 파일이라 코드로 되살릴 수 없다.
+# tools/make_xlsx_fixture.py로 다시 만든다.
+!real_excel.xlsx

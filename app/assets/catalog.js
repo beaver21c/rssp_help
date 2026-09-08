@@ -167,6 +167,10 @@ function formsOf(section) {
 
 const squash = (s) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
 
+/* 같은 문장이 두 번 나오지 않게 한다. 안내서 원문에서 뽑은 제약은 '전략'과 '추진전략'처럼
+ * 대상만 다르고 결과 문장은 똑같은 짝이 섞여 있어 그대로 두면 화면에 겹쳐 보인다 */
+const dedupe = (arr) => Array.from(new Set(arr));
+
 /** 표 머리행 한 줄. 칸 안 줄바꿈은 한 칸 띄어쓰기로 눕힌다 */
 function headerLine(form) {
   const cells = (form.header || []).map((c) => squash(c));
@@ -176,9 +180,10 @@ function headerLine(form) {
 
 /** limits 한 항목을 사람이 읽는 문장으로 */
 export function limitSentence(lim) {
+  if (!lim || typeof lim !== 'object') throw new Error('수량 제약이 객체가 아니다');
   const scope = squash(lim.scope) || '항목';
   const unit = lim.unit || '개';
-  const n = lim.n;
+  const n = typeof lim.n === 'number' && Number.isFinite(lim.n) ? String(lim.n) : '몇';
   const body = lim.op === 'min'
     ? `${scope}: ${n}${unit} 이상 쓴다`
     : `${scope}: ${n}${unit} 이내로 쓴다`;
@@ -219,7 +224,9 @@ export function promptFor(section) {
     const L = [`이 절에는 안내서가 정한 표 ${forms.length}개가 들어간다. 행·열 수와 머리행을 그대로 지킨다.`];
     forms.forEach((f, i) => {
       const head = headerLine(f);
-      L.push(`표 ${i + 1}: ${f.rows}행 ${f.cols}열, ` +
+      const size = (typeof f.rows === 'number' && typeof f.cols === 'number')
+        ? `${f.rows}행 ${f.cols}열` : '행·열 수가 안내서에 적히지 않았다';
+      L.push(`표 ${i + 1}: ${size}, ` +
         (head ? `머리행: ${head}` : '머리행 없음 — 안내서의 도표(빈 칸 그림)라 칸 구조만 맞춘다'));
     });
     B.push('[양식]\n' + L.join('\n'));
@@ -227,10 +234,12 @@ export function promptFor(section) {
     B.push('[양식]\n이 절에 딸린 빈 표 양식은 없다. 표를 새로 만들지 않는다.');
   }
 
-  /* 4. 수량 제약 */
-  const limits = Array.isArray(section.limits) ? section.limits : [];
-  B.push('[수량 제약]\n' + (limits.length
-    ? limits.map((l) => '- ' + limitSentence(l)).join('\n')
+  /* 4. 수량 제약 — 꼴이 깨진 항목은 버린다(같은 문장은 한 번만 적는다) */
+  const limits = (Array.isArray(section.limits) ? section.limits : [])
+    .filter((l) => l && typeof l === 'object');
+  const limLines = dedupe(limits.map((l) => '- ' + limitSentence(l)));
+  B.push('[수량 제약]\n' + (limLines.length
+    ? limLines.join('\n')
     : '- 안내서가 못박은 개수 제한은 없다. 그렇다고 늘어놓지 말고 절 분량에 맞춘다.'));
 
   /* 5. 문체 */
@@ -326,23 +335,34 @@ export function checkLimits(section, markerText) {
   const items = outline(markerText);
 
   for (const lim of limits) {
-    if (!lim || typeof lim.n !== 'number') continue;
+    if (!lim || typeof lim !== 'object') {
+      unknown.push('수량 제약 꼴이 깨져 세지 못했다');
+      continue;
+    }
     const scope = squash(lim.scope);
+    /* 개수가 숫자가 아니면 견줄 수가 없다. 조용히 버리지 않고 확인 불가로 남긴다 */
+    if (typeof lim.n !== 'number' || !Number.isFinite(lim.n)) {
+      unknown.push(`${limitSentence(lim)} — 제한 개수(${lim.n === undefined ? '없음' : String(lim.n)})가 숫자가 아니라 세지 못했다`);
+      continue;
+    }
     const key = scope.replace(/\s+/g, '');
     if (key.length < 2) { unknown.push(`${limitSentence(lim)} — 셀 대상(${scope || '?'})이 뚜렷하지 않아 세지 못했다`); continue; }
 
     /* 머리말이 여러 군데면 실제로 목록을 거느린 쪽(가장 많이 센 쪽)을 본다 */
-    let best = null, where = null;
+    let best = null, where = null, seenHead = false;
     for (let i = 0; i < items.length; i++) {
       const it = items[i];
       if (it.kind !== 'item') continue;
       if (!it.text.replace(/\s+/g, '').includes(key)) continue;
+      seenHead = true;
       const c = countUnder(items, i);
       if (c !== null && (best === null || c > best)) { best = c; where = it.text; }
     }
 
     if (best === null) {
-      unknown.push(`${limitSentence(lim)} — 원고에서 “${scope}” 항목을 찾지 못해 세지 못했다`);
+      unknown.push(seenHead
+        ? `${limitSentence(lim)} — 원고의 “${scope}” 머리말 아래에 셀 항목이 없어 세지 못했다`
+        : `${limitSentence(lim)} — 원고에서 “${scope}” 항목을 찾지 못해 세지 못했다`);
       continue;
     }
     const unit = lim.unit || '개';
@@ -353,6 +373,8 @@ export function checkLimits(section, markerText) {
     }
   }
 
-  hide(violations, 'unknown', unknown);
-  return violations;
+  /* 같은 사유가 두 번 나오지 않게 한다('전략'과 '추진전략'처럼 대상이 겹치는 제약이 있다) */
+  const out = dedupe(violations);
+  hide(out, 'unknown', dedupe(unknown));
+  return out;
 }

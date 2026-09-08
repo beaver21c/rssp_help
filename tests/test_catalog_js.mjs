@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
   loadCatalog, findSection, sectionList, promptFor, blankForms, checkLimits,
-  pathOf, outline,
+  pathOf, outline, limitSentence,
 } from '../app/assets/catalog.js';
 const FIXTURE = new URL('./fixtures/sections.sample.json', import.meta.url);
 const REAL = new URL('../app/data/sections.json', import.meta.url);
@@ -124,6 +124,15 @@ const SAMPLE = {
   ],
 };
 
+/* 배열 차례를 일부러 흐트러뜨린다. sectionList가 배열 차례를 그냥 되읊는 게 아니라
+ * children 줄기를 타고 도는지 보려면 자식이 부모보다 앞에 놓여 있어야 한다 */
+SAMPLE.nodes = ['01-가-1-(1)', '01-나', '01', '01-가-1', '01-가', '02']
+  .map((id) => {
+    const n = SAMPLE.nodes.find((x) => x.id === id);
+    if (!n) throw new Error(`고정 데이터에 ${id}가 없다`);
+    return n;
+  });
+
 mkdirSync(fileURLToPath(new URL('./fixtures/', import.meta.url)), { recursive: true });
 writeFileSync(fileURLToPath(FIXTURE), JSON.stringify(SAMPLE, null, 2) + '\n');
 
@@ -175,6 +184,7 @@ ok(order === '01,01-가,01-가-1,01-가-1-(1),01-나,02', `전위 순회 차례�
   ok(list[0].depth === 0, '첫 항목은 장(depth 0)이어야 한다');
 }
 ok(list[1].label === '가. 목표 및 추진전략', `이름표가 어긋난다 — ${list[1].label}`);
+ok(cat.nodes[0].id !== list[0].id, '고정 데이터의 배열 차례와 목록 차례가 같으면 순회를 못 본 셈이다');
 
 /* ───────── blankForms ───────── */
 head('blankForms');
@@ -234,6 +244,23 @@ ok(p.includes('지시에 없는 표를 만들지 않는다'), '금지에 임의 
 ok(p.includes('지어내지 않는다') && p.includes('○○'), '금지에 날조·빈칸 규칙이 있어야 한다');
 ok(promptFor(findSection(cat, '01-가-1')).includes('「작성 취지 및 방법」 박스가 없다'),
   '지침 없는 마디도 지시 토막을 채워야 한다');
+/* 꼴이 깨진 자료가 섞여도 조용한 TypeError로 무너지지 않는다(계약 0장) */
+{
+  const 제약구간 = (s) => s.slice(s.indexOf('[수량 제약]'), s.indexOf('[문체]'));
+  for (const 쓰레기 of [null, 1, 'x', []]) {
+    let msg = '', got = '';
+    try { got = 제약구간(promptFor({ id: 'x', forms: [], limits: [쓰레기] })); }
+    catch (e) { msg = e.constructor.name + ': ' + e.message; }
+    ok(!msg, `limits에 ${JSON.stringify(쓰레기)}가 섞였다고 던지면 안 된다 — ${msg}`);
+    ok(!/undefined|null|NaN|\[object/.test(got), `제약 문장에 날값이 새면 안 된다 — ${got.trim()}`);
+  }
+  let msg = '';
+  try { limitSentence(null); } catch (e) { msg = e.message; }
+  ok(/객체가 아니다/.test(msg), `limitSentence(null)은 한국어 Error여야 한다 — ${msg || '안 던졌다'}`);
+  const 표없는칸 = promptFor({ id: 'x', forms: [{ idx: 0, kind: 'blank', header: ['가', '나'] }] });
+  ok(!/undefined/.test(표없는칸), '표 크기를 모를 때 undefined를 찍으면 안 된다 — ' +
+    (표없는칸.split('\n').find((l) => l.startsWith('표 1:')) || ''));
+}
 
 /* ───────── checkLimits ───────── */
 head('checkLimits');
@@ -295,6 +322,38 @@ const 위반원고 = [
   threw = '';
   try { checkLimits(s가, null); } catch (e) { threw = e.message; }
   ok(!!threw, '원고가 없으면 던져야 한다');
+}
+{
+  /* 셀 수 없는 제약은 조용히 버리지 않고 확인 불가로 남긴다(계약 0장) */
+  const 깨진마디 = { id: 'x', limits: [
+    { text: '추진전략(5개 이내)', scope: '추진전략', op: 'max', n: '5', unit: '개' },
+    null,
+  ] };
+  const v = checkLimits(깨진마디, '○ 추진전략\n▪ 하나\n▪ 둘\n');
+  ok(v.length === 0, `숫자가 아닌 제한을 위반으로 삼으면 안 된다 — ${v.join(' / ')}`);
+  ok(v.unknown.length === 2, `버리지 말고 확인 불가 2건으로 남겨야 하는데 ${v.unknown.length}건 — ${v.unknown.join(' / ')}`);
+  ok(v.unknown.some((m) => /숫자가 아니라/.test(m)), '숫자 아닌 제한임을 밝혀야 한다 — ' + v.unknown.join(' / '));
+  ok(!v.unknown.some((m) => /undefined|NaN/.test(m)), '확인 불가 사유에 날값이 새면 안 된다 — ' + v.unknown.join(' / '));
+}
+{
+  /* 머리말은 찾았는데 아래가 비었을 때와 머리말 자체가 없을 때를 갈라 적는다 */
+  const m = { id: 'x', limits: [{ text: 't', scope: '세부사업', op: 'min', n: 3, unit: '개' }] };
+  const 빈머리말 = checkLimits(m, '○ 세부사업\n');
+  const 머리말없음 = checkLimits(m, '○ 딴소리\n▪ 하나\n');
+  ok(빈머리말.unknown.length === 1 && /셀 항목이 없어/.test(빈머리말.unknown[0]),
+    '머리말은 찾았으나 아래가 빈 경우를 갈라 적어야 한다 — ' + 빈머리말.unknown.join(' / '));
+  ok(머리말없음.unknown.length === 1 && /찾지 못해/.test(머리말없음.unknown[0]),
+    '머리말이 아예 없는 경우와 뭉뚱그리면 안 된다 — ' + 머리말없음.unknown.join(' / '));
+}
+{
+  /* 대상이 겹치는 제약('전략'은 '추진전략'에도 물린다)이 같은 사유를 두 번 찍으면 안 된다 */
+  const 겹침 = { id: 'x', limits: [
+    { text: '추진전략(5개 이내)', scope: '추진전략', op: 'max', n: 5, unit: '개' },
+    { text: '전략5개 이내', scope: '전략', op: 'max', n: 5, unit: '개' },
+  ] };
+  const v = checkLimits(겹침, ['○ 추진전략', '▪ 1', '▪ 2', '▪ 3', '▪ 4', '▪ 5', '▪ 6'].join('\n'));
+  ok(v.length === 1, `같은 사유는 한 번만 적어야 하는데 ${v.length}건 — ${v.join(' / ')}`);
+  ok(new Set(v).size === v.length && new Set(v.unknown).size === v.unknown.length, '겹치는 사유가 남았다');
 }
 {
   const o = outline('# 제목\n○ 항목\n| a | b |\n|---|---|\n※ 자료：x\n');
