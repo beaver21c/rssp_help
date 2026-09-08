@@ -9,6 +9,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -16,8 +17,31 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: '3.11' }
 
-      - name: hwpx-studio 설치(파이썬 대조용)
-        run: pip install -q "hwpx-studio" || pip install -q "python-hwpx>=6.2,<7"
+      # 양식 보존 빌더를 파이썬판과 대조하려면 hwpx_studio의 assets/build_form.py가
+      # 있어야 한다. 이 패키지는 PyPI에 없고 바퀴(wheel)에는 assets/가 빠져 있어
+      # 소스를 받아 editable로 깐다.
+      - name: hwpx_set 내려받기(파이썬 대조용)
+        uses: actions/checkout@v4
+        with:
+          repository: beaver21c/hwpx_set
+          path: .hwpx_set
+
+      - name: hwpx-studio 설치
+        run: |
+          pip install -e .hwpx_set
+          python3 - <<'PY'
+          import pathlib, hwpx_studio
+          p = pathlib.Path(hwpx_studio.__file__).parent / "assets" / "build_form.py"
+          assert p.exists(), f"{p} 가 없다 — 대조할 파이썬 빌더를 찾지 못한다"
+          print("build_form.py 확인:", p)
+          PY
+
+      # 지표 차트와 통합 시험이 실제 브라우저를 쓴다. 모듈 시험보다 먼저 깔아 두어야
+      # 차트 렌더 검사가 건너뛰기로 빠지지 않는다.
+      - name: Chromium 설치
+        run: |
+          npm i --no-save playwright@1.56.1
+          npx playwright install --with-deps chromium
 
       - name: 카탈로그·템플릿 검사
         run: python3 tests/test_catalog.py
@@ -25,16 +49,14 @@ jobs:
       - name: 모듈 시험
         run: |
           node tests/test_form_parity.mjs
+          node tests/test_docread.mjs
           node tests/test_attach.mjs
           node tests/test_indicator.mjs
           node tests/test_catalog_js.mjs
           node tests/test_gemini.mjs
 
-      - name: 브라우저 통합 시험
-        run: |
-          npm i -D playwright@1.49.1
-          npx playwright install --with-deps chromium
-          node tests/test_e2e.mjs
+      - name: 브라우저 통합 시험 (65개 마디)
+        run: node tests/test_e2e.mjs
 
       - name: 산출물 올리기
         if: always()
@@ -43,3 +65,4 @@ jobs:
           name: 시험-산출물
           path: tests/out/
           if-no-files-found: ignore
+          retention-days: 7
