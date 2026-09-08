@@ -14,6 +14,7 @@ import hashlib
 import json
 import re
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -339,15 +340,50 @@ def check_links(cat: dict) -> None:
             elif mir == n["id"]:
                 bad(f"{n['id']}: mirrors가 자기 자신이다")
 
-    # 도식형은 머리행이 비어 있어야 하고, 작성용 양식에서 빠져 있어야 한다
+    # 체계도는 머리행이 비어 있어야 하고, 작성용 양식에서 빠져 있어야 한다
+    seqs: set[int] = set()
     for n in cat["nodes"]:
         for f in n["forms"]:
+            if "seq" not in f:
+                bad(f"{n['id']} 표 {f['idx']}: seq가 없다 — 원본을 되찾을 열쇠다")
+            elif f["seq"] in seqs:
+                bad(f"{n['id']} 표 {f['idx']}: seq {f['seq']}가 겹친다")
+            else:
+                seqs.add(f["seq"])
             if f["kind"] != "layout":
                 continue
             if any(h.strip() for h in f["header"]):
                 bad(f"{n['id']} 표 {f['idx']}: layout인데 머리행에 글이 있다")
             if f["required"]:
                 bad(f"{n['id']} 표 {f['idx']}: layout인데 required가 참이다")
+            check_layout_xml(n, f)
+
+
+def check_layout_xml(node: dict, form: dict) -> None:
+    """체계도 원본 조각이 실제로 그 표를 담고 있는가."""
+    where = f"{node['id']} 표 {form['idx']}"
+    rel = form.get("xml")
+    if not rel:
+        bad(f"{where}: layout인데 xml 경로가 없다 — 산출할 때 체계도를 넣지 못한다")
+        return
+    path = ROOT / "app" / "data" / rel
+    if not path.exists():
+        bad(f"{where}: 체계도 조각이 없다 — {rel}")
+        return
+    raw = path.read_text(encoding="utf-8")
+    if not raw.startswith("<hp:p"):
+        bad(f"{where}: 체계도 조각이 문단(<hp:p>)으로 시작하지 않는다")
+    m = re.search(r'<hp:tbl [^>]*rowCnt="(\d+)" colCnt="(\d+)"', raw)
+    if not m:
+        bad(f"{where}: 체계도 조각에 표가 없다")
+    elif (int(m.group(1)), int(m.group(2))) != (form["rows"], form["cols"]):
+        bad(f"{where}: 체계도 조각의 표가 {m.group(1)}×{m.group(2)}인데 "
+            f"카탈로그는 {form['rows']}×{form['cols']}다")
+    if "<hp:t>" not in raw:
+        bad(f"{where}: 체계도 조각에 글자가 없다")
+    # 이 방식은 template.hwpx의 header.xml이 원본과 같아야 성립한다
+    if "borderFillIDRef=" not in raw:
+        bad(f"{where}: 체계도 조각에 테두리 서식 참조가 없다 — 원본을 잘못 떼었다")
 
 
 # ---------------------------------------------------------------------------
@@ -564,9 +600,12 @@ def check_rebuild(cat: dict) -> None:
         names = set(z.namelist())
         toc = (z.read(build_catalog.TOC_SECTION).decode("utf-8")
                if build_catalog.TOC_SECTION in names else None)
+        body = z.read(build_catalog.BODY_SECTION).decode("utf-8")
         fresh = build_catalog.build_catalog(
-            z.read(build_catalog.BODY_SECTION).decode("utf-8"),
-            z.read(build_catalog.HEADER_XML).decode("utf-8"), toc)
+            body, z.read(build_catalog.HEADER_XML).decode("utf-8"), toc)
+    # 체계도 원본 떼어내기까지 해야 forms의 xml 자리가 채워져 산출물과 짝이 맞는다
+    with tempfile.TemporaryDirectory() as tmp:
+        build_catalog.extract_layouts(body, fresh, Path(tmp))
     a = dict(cat)
     b = dict(fresh)
     a.pop("generated_at", None)

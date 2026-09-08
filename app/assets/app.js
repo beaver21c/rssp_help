@@ -10,6 +10,7 @@ import { loadIndex, groupCodes, analyze, narrate, KEY_CODES } from './indicator.
 import { renderComparisonChart } from './chart.js';
 import * as gem from './gemini.js';
 import { readBodyText } from './docread.js';
+import { injectRawBlocks, token as layoutToken, usedKeys } from './rawblock.js';
 
 /* ───────── 공용 ───────── */
 const $ = (s) => document.querySelector(s);
@@ -167,11 +168,13 @@ function selectSection(id) {
   if (!forms.length && !layouts.length) {
     fbox.appendChild(el('p', 'note', '이 마디에 고정된 표 양식은 없다. 서술형으로 쓴다.'));
   }
-  for (const f of layouts) {
-    fbox.appendChild(el('p', 'note',
-      `도식 ${f.rows}행 ${f.cols}열 — 전략체계도처럼 표로 그린 그림이라 이 도구가 받아쓰지 않는다. ` +
-      '산출한 hwpx를 한글에서 열어 안내서의 도식을 직접 옮겨 그릴 것.'));
-  }
+  layouts.forEach((f, i) => {
+    fbox.appendChild(el('div', 'formcap', `체계도 ${i + 1} — ${f.rows}행 ${f.cols}열`));
+    fbox.appendChild(el('p', 'note', f.xml
+      ? '칸을 병합해 그린 체계도라 파이프 표로 받아쓸 수 없다. 안내서 원본 표를 칸 병합·테두리째 '
+        + '그대로 옮겨 넣으므로, 산출한 hwpx를 한글에서 열어 칸의 글자만 고치면 된다.'
+      : '칸을 병합해 그린 체계도인데 원본 조각을 찾지 못했다. 한글에서 안내서를 열어 직접 옮길 것.'));
+  });
 
   $('#w-make').disabled = !$('#w-draft').value.trim();
   $('#r-sec').value = id;
@@ -283,7 +286,11 @@ $('#w-skel').onclick = () => {
   const head = '#'.repeat(Math.min(4, depth + 1));
   const L = [`${head} ${n.no ? n.no + ' ' : ''}${n.title}`, ''];
   const forms = blankForms(n);
-  if (!forms.length) L.push('○ ○○○○', '▪ ○○○○', '');
+  // 도식은 안내서 원본 조각을 그대로 넣는다. 자리표만 두고 산출할 때 갈아 끼운다
+  for (const f of (n.forms || []).filter((x) => x.kind === 'layout' && x.xml)) {
+    L.push(`${layoutToken(n.id + '#' + f.idx)}`, '');
+  }
+  if (!forms.length && !L.some((x) => x.startsWith('[[도식:'))) L.push('○ ○○○○', '▪ ○○○○', '');
   forms.forEach((f, i) => {
     const head = f.header.map(cell);
     L.push(`○ ${head.find((h) => h.trim()) || '작성 항목'}`);
@@ -378,17 +385,46 @@ function showIssues(listSel, sumSel, cardSel, items) {
   if (sumSel) $(sumSel).textContent = `오류 ${items.filter((i) => i.lv === 'err').length} · 경고 ${items.filter((i) => i.lv === 'warn').length}`;
 }
 
+
+/* 원고 → hwpx. 도식 자리표가 있으면 안내서 원본 조각을 받아 갈아 끼운다. */
+const layoutCache = new Map();
+async function layoutXml(key) {
+  if (layoutCache.has(key)) return layoutCache.get(key);
+  const [id, idx] = key.split('#');
+  const node = findSection(S.catalog, id);
+  const form = node && (node.forms || []).find((f) => String(f.idx) === idx);
+  if (!form || !form.xml) throw new Error(`도식 ${key}의 원본 조각을 카탈로그에서 찾지 못했다`);
+  const r = await fetch('data/' + form.xml);
+  if (!r.ok) throw new Error(`도식 파일을 읽지 못했다 — data/${form.xml}`);
+  const xml = await r.text();
+  layoutCache.set(key, xml);
+  return xml;
+}
+
+async function makeDoc(text, images) {
+  const res = await buildForm(S.template, S.form, text, { images: images || new Map() });
+  const keys = usedKeys(text);
+  if (!keys.length) return { ...res, layouts: [] };
+  const blocks = new Map();
+  for (const k of keys) blocks.set(k, await layoutXml(k));
+  const out = await injectRawBlocks(res.bytes, S.form.section, blocks);
+  if (out.missing.length) throw new Error(`도식을 넣지 못했다: ${out.missing.join(', ')}`);
+  return { ...res, bytes: out.bytes, layouts: out.placed };
+}
+
 /* ───────── 절 hwpx 산출 ───────── */
 $('#w-make').onclick = async () => {
   const text = $('#w-draft').value;
   if (!text.trim()) return;
   say('#w-mstatus', '문서 만드는 중…', 'busy');
   try {
-    const res = await buildForm(S.template, S.form, text, { images: new Map() });
+    const res = await makeDoc(text, new Map());
     const n = S.wSection;
     download(res.bytes, `${safeName((n ? (n.id + '_' + n.title) : '절'))}.hwpx`);
     const bad = (res.issues || []).length;
-    say('#w-mstatus', `산출 완료 (${kb(res.bytes.length)})` + (bad ? ` · 경고 ${bad}건` : ''), bad ? '' : 'ok');
+    say('#w-mstatus', `산출 완료 (${kb(res.bytes.length)})`
+      + (res.layouts.length ? ` · 도식 ${res.layouts.length}개 포함` : '')
+      + (bad ? ` · 경고 ${bad}건` : ''), bad ? '' : 'ok');
   } catch (e) {
     say('#w-mstatus', '산출 실패 — ' + e.message, 'err');
   }
@@ -533,8 +569,7 @@ $('#r-make').onclick = async () => {
     const IMG = 'indicator.png';
     let text = $('#r-draft').value;
     if (!text.includes(`![](${IMG})`)) text = insertImage(text, IMG);
-    const images = new Map([[IMG, S.rPng]]);
-    const res = await buildForm(S.template, S.form, text, { images });
+    const res = await makeDoc(text, new Map([[IMG, S.rPng]]));
     const sec = findSection(S.catalog, $('#r-sec').value);
     download(res.bytes, `${safeName((sec ? sec.id + '_' : '') + '지역여건_' + regionLabel(S.rOpts))}.hwpx`);
     say('#r-mstatus', `산출 완료 (${kb(res.bytes.length)}) · 그래프 포함`, 'ok');
@@ -629,7 +664,7 @@ $('#c-fix').onclick = async () => {
 $('#c-make').onclick = async () => {
   say('#c-mstatus', '양식 적용 중…', 'busy');
   try {
-    const res = await buildForm(S.template, S.form, $('#c-draft').value, { images: new Map() });
+    const res = await makeDoc($('#c-draft').value, new Map());
     download(res.bytes, safeName(S.cName.replace(/\.hwpx$/i, '') + '_양식적용') + '.hwpx');
     say('#c-mstatus', `산출 완료 (${kb(res.bytes.length)})`, 'ok');
   } catch (e) { say('#c-mstatus', '산출 실패 — ' + e.message, 'err'); }

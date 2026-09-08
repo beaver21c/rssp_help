@@ -276,8 +276,33 @@ for (const node of targets) {
       ok(miss.length === 0, `[${label}] 표${i + 1} 머리행 보존`, '빠짐: ' + miss.join(', '));
     });
   }
+  /* ★ 도식 검사 — 안내서 원본 조각이 그대로 들어갔는가 */
+  const wantLayouts = (node.forms || []).filter((f) => f.kind === 'layout' && f.xml);
+  if (wantLayouts.length) {
+    ok(!secXml.includes('[[도식:'), `[${label}] 도식 자리표가 남지 않았다`);
+    for (const f of wantLayouts) {
+      const src = fs.readFileSync(path.join(APP, 'data', f.xml), 'utf8');
+      // 체계도는 칸을 병합해 그린 표다. 같은 행·열 수의 표가 산출물에 있어야 한다
+      const here = got.some((t) => t.rows === f.rows && t.cols === f.cols);
+      ok(here, `[${label}] 체계도 ${f.rows}×${f.cols} 표가 들어갔다`,
+        `산출물 표: ${got.map((t) => `${t.rows}x${t.cols}`).join(', ')}`);
+      // 원본 조각의 글자가 그대로 옮겨졌는가(칸 병합·서식까지 원본을 베낀 증거)
+      const marks = [...src.matchAll(/<hp:t>([^<]{4,30})<\/hp:t>/g)].map((m) => m[1]).slice(0, 5);
+      const kept = marks.filter((t) => secXml.includes(t));
+      ok(marks.length && kept.length === marks.length,
+        `[${label}] 체계도 안 글자 보존(${kept.length}/${marks.length})`,
+        marks.filter((t) => !secXml.includes(t)).join(' / '));
+      // 원본이 참조하는 서식 번호가 그대로 살아 있어야 한다(header.xml이 같아서 유효)
+      const bf = [...new Set([...src.matchAll(/borderFillIDRef="(\d+)"/g)].map((m) => m[1]))];
+      const alive = bf.filter((id) => secXml.includes(`borderFillIDRef="${id}"`));
+      ok(bf.length && alive.length === bf.length,
+        `[${label}] 체계도 테두리 서식 ${bf.length}종 보존`, `살아남음 ${alive.length}종`);
+    }
+  }
+
   ok(consoleErrs.length === 0, `[${label}] 콘솔 오류 없음`, consoleErrs.join(' | '));
-  summary.push({ id: node.id, ok: true, tables: got.length, want: wantForms.length, bytes: buf.length });
+  summary.push({ id: node.id, ok: true, tables: got.length, want: wantForms.length,
+    layouts: wantLayouts.length, bytes: buf.length });
 }
 
 /* ───────── 지역여건 분석 ───────── */
