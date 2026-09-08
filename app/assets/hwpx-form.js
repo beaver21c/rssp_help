@@ -54,10 +54,27 @@ function pyRound(value) {
 
 const mmToUnit = (value) => pyRound(value * MM);
 
-/** 파이썬 `str.splitlines()`와 같게 자른다. 끝의 줄바꿈 하나는 빈 줄이 아니다. */
+/**
+ * 파이썬 `str.splitlines()`와 같게 자른다. 끝의 줄바꿈 하나는 빈 줄이 아니다.
+ * 파이썬은 `\n \r \r\n` 말고도 `\v \f \x1c \x1d \x1e \x85 \u2028 \u2029`에서
+ * 줄을 나눈다. JS `split(/\n/)`만 쓰면 PDF에서 붙여넣은 원고가 파이썬과
+ * 다르게 잘리고, 그 글자가 그대로 XML로 새어 나간다.
+ */
+const LINE_BREAK = /\r\n|[\n\r\v\f\u001c-\u001e\u0085\u2028\u2029]/g;
+
 function splitLines(text) {
   if (!text) return [];
-  return text.replace(/(\r\n|\n|\r)$/, '').split(/\r\n|\n|\r/);
+  const src = String(text);
+  const out = [];
+  let start = 0;
+  let m;
+  LINE_BREAK.lastIndex = 0;
+  while ((m = LINE_BREAK.exec(src)) !== null) {
+    out.push(src.slice(start, m.index));
+    start = m.index + m[0].length;
+  }
+  if (start < src.length) out.push(src.slice(start));
+  return out;
 }
 
 const rstrip = (text) => text.replace(/\s+$/, '');
@@ -510,8 +527,16 @@ function noteIssues(note, number, line, level) {
 // ──────────────────────────────────────────────────────────────
 // XML 만들기
 // ──────────────────────────────────────────────────────────────
+/**
+ * XML 1.0이 받아 주지 않는 제어문자. 원고를 PDF·한글에서 붙여넣으면 딸려 온다.
+ * 그대로 내보내면 `checkOutput`의 태그 세기는 통과하지만 한글은 파일을 열지
+ * 못한다 — 조용히 깨진 문서가 나가는 자리라 여기서 떨어뜨린다.
+ */
+const XML_FORBIDDEN = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]/g;
+
 export function esc(text) {
-  return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return String(text).replace(XML_FORBIDDEN, '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 const tag = (text) => (text ? `<hp:t>${esc(text)}</hp:t>` : '<hp:t/>');
