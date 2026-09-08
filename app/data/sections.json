@@ -1,7 +1,7 @@
 {
  "source": "제6기(2027~2030) 지역사회보장계획 수립 안내 [시·군·구]",
  "scope": "시군구",
- "generated_at": "2026-09-08T05:22:26",
+ "generated_at": "2026-09-08T07:46:09",
  "template": "template.hwpx",
  "body_section": "Contents/section2.xml",
  "stats": {
@@ -67,6 +67,7 @@
    "forms": [
     {
      "idx": 0,
+     "seq": 1,
      "kind": "layout",
      "rows": 27,
      "cols": 29,
@@ -971,10 +972,12 @@
       8,
       1
      ],
-     "required": false
+     "required": false,
+     "xml": "layout/01-가-1-0.xml"
     },
     {
      "idx": 1,
+     "seq": 2,
      "kind": "example",
      "rows": 27,
      "cols": 29,
@@ -1883,6 +1886,7 @@
     },
     {
      "idx": 2,
+     "seq": 3,
      "kind": "note",
      "rows": 1,
      "cols": 1,
@@ -1901,6 +1905,7 @@
     },
     {
      "idx": 3,
+     "seq": 4,
      "kind": "howto",
      "rows": 3,
      "cols": 3,
@@ -2045,6 +2050,7 @@
    "forms": [
     {
      "idx": 0,
+     "seq": 5,
      "kind": "blank",
      "rows": 25,
      "cols": 3,
@@ -2213,6 +2219,7 @@
    "forms": [
     {
      "idx": 0,
+     "seq": 6,
      "kind": "example",
      "rows": 22,
      "cols": 3,
@@ -2342,6 +2349,7 @@
     },
     {
      "idx": 1,
+     "seq": 7,
      "kind": "howto",
      "rows": 3,
      "cols": 3,
@@ -2398,6 +2406,7 @@
    "forms": [
     {
      "idx": 0,
+     "seq": 8,
      "kind": "blank",
      "rows": 25,
      "cols": 3,
@@ -2542,6 +2551,7 @@
     },
     {
      "idx": 1,
+     "seq": 9,
      "kind": "howto",
      "rows": 3,
      "cols": 3,
@@ -2620,6 +2630,7 @@
    "forms": [
     {
      "idx": 0,
+     "seq": 10,
      "kind": "blank",
      "rows": 72,
      "cols": 15,
@@ -3887,6 +3898,7 @@
     },
     {
      "idx": 1,
+     "seq": 11,
      "kind": "howto",
      "rows": 3,
      "cols": 3,
@@ -3965,6 +3977,7 @@
    "forms": [
     {
      "idx": 0,
+     "seq": 12,
      "kind": "howto",
      "rows": 3,
      "cols": 3,
@@ -4024,6 +4037,7 @@
    "forms": [
     {
      "idx": 0,
+     "seq": 13,
      "kind": "blank",
      "rows": 25,
      "cols": 9,
@@ -4330,6 +4344,7 @@
     },
     {
      "idx": 1,
+     "seq": 14,
      "kind": "blank",
      "rows": 28,
      "cols": 9,
@@ -4669,6 +4684,7 @@
     },
     {
      "idx": 2,
+     "seq": 15,
      "kind": "example",
      "rows": 25,
      "cols": 9,
@@ -4975,6 +4991,7 @@
     },
     {
      "idx": 3,
+     "seq": 16,
      "kind": "howto",
      "rows": 3,
      "cols": 3,
@@ -5055,6 +5072,7 @@
    "forms": [
     {
      "idx": 0,
+     "seq": 17,
      "kind": "blank",
      "rows": 15,
      "cols": 14,
@@ -5336,6 +5354,7 @@
     },
     {
      "idx": 1,
+     "seq": 18,
      "kind": "example",
      "rows": 15,
      "cols": 14,
@@ -5617,6 +5636,7 @@
     },
     {
      "idx": 2,
+     "seq": 19,
      "kind": "howto",
      "rows": 3,
      "cols": 3,
@@ -5694,6 +5714,7 @@
    "forms": [
     {
      "idx": 0,
+     "seq": 20,
      "kind": "blank",
      "rows": 6,
      "cols": 5,
@@ -5759,6 +5780,7 @@
     },
     {
      "idx": 1,
+     "seq": 21,
      "kind": "example",
      "rows": 6,
      "cols": 5,
@@ -5824,6 +5846,7 @@
     },
     {
      "idx": 2,
+     "seq": 22,
      "kind": "howto",
      "rows": 3,
      "cols": 3,
@@ -5883,6 +5906,7 @@
    "forms": [
     {
      "idx": 0,
+     "seq": 23,
      "kind": "blank",
      "rows": 9,
      "cols": 15,
@@ -6079,6 +6103,7 @@
     },
     {
      "idx": 1,
+     "seq": 24,
      "kind": "example",
      "rows": 9,
      "cols": 15,
@@ -6275,6 +6300,7 @@
     },
     {
      "idx": 2,
+     "seq": 25,
      "kind": "howto",
      "rows": 3,
      "cols": 3,
@@ -6406,6 +6432,7 @@
    "forms": [
     {
      "idx": 0,
+     "seq": 26,
      "kind": "layout",
      "rows": 16,
      "cols": 15,
@@ -6717,10 +6744,12 @@
       9,
       9
      ],
-     "required": false
+     "required": false,
+     "xml": "layout/03-가-0.xml"
     },
     {
      "idx": 1,
+     "seq": 27,
      "kind": "example",
      "rows": 16,
      "cols": 15,
@@ -7036,6 +7065,7 @@
     },
     {
      "idx": 2,
+     "seq": 28,
      "kind": "howto",
      "rows": 3,
      "cols": 3,
@@ -7141,6 +7171,7 @@
    "forms": [
     {
      "idx": 0,
+     "seq": 29,
      "kind": "blank",
      "rows": 7,
      "cols": 11,
@@ -7267,6 +7298,7 @@
     },
     {
      "idx": 1,
+     "seq": 30,
      "kind": "blank",
      "rows": 5,
      "cols": 5,
@@ -7325,6 +7357,7 @@
     },
     {
      "idx": 2,
+     "seq": 31,
      "kind": "blank",
      "rows": 3,
      "cols": 13,
@@ -7409,6 +7442,7 @@
     },
     {
      "idx": 3,
+     "seq": 32,
      "kind": "blank",
      "rows": 3,
      "cols": 13,
@@ -7551,6 +7585,7 @@
    "forms": [
     {
      "idx": 0,
+     "seq": 33,
      "kind": "blank",
      "rows": 6,
      "cols": 13,
@@ -7783,6 +7818,7 @@
    "forms": [
     {
      "idx": 0,
+     "seq": 34,
      "kind": "example",
      "rows": 6,
      "cols": 13,
@@ -7912,6 +7948,7 @@
     },
     {
      "idx": 1,
+     "seq": 35,
      "kind": "howto",
      "rows": 3,
      "cols": 3,
@@ -7991,6 +8028,7 @@
    "forms": [
     {
      "idx": 0,
+     "seq": 36,
      "kind": "example",
      "rows": 3,
      "cols": 9,
@@ -8111,6 +8149,7 @@
    "forms": [
     {
      "idx": 0,
+     "seq": 37,
      "kind": "blank",
      "rows": 6,
      "cols": 13,
@@ -8322,6 +8361,7 @@
    "forms": [
     {
      "idx": 0,
+     "seq": 38,
      "kind": "blank",
      "rows": 6,
      "cols": 13,
@@ -8451,6 +8491,7 @@
     },
     {
      "idx": 1,
+     "seq": 39,
      "kind": "howto",
      "rows": 3,
      "cols": 3,
@@ -8526,6 +8567,7 @@
    "forms": [
     {
      "idx": 0,
+     "seq": 40,
      "kind": "blank",
      "rows": 6,
      "cols": 8,
@@ -8672,6 +8714,7 @@
    "forms": [
     {
      "idx": 0,
+     "seq": 41,
      "kind": "blank",
      "rows": 6,
      "cols": 13,
@@ -8889,6 +8932,7 @@
    "forms": [
     {
      "idx": 0,
+     "seq": 42,
      "kind": "blank",
      "rows": 6,
      "cols": 13,
@@ -9109,6 +9153,7 @@
    "forms": [
     {
      "idx": 0,
+     "seq": 43,
      "kind": "blank",
      "rows": 12,
      "cols": 8,
@@ -9258,6 +9303,7 @@
     },
     {
      "idx": 1,
+     "seq": 44,
      "kind": "howto",
      "rows": 3,
      "cols": 3,
@@ -9314,6 +9360,7 @@
    "forms": [
     {
      "idx": 0,
+     "seq": 45,
      "kind": "blank",
      "rows": 5,
      "cols": 4,
@@ -9365,6 +9412,7 @@
     },
     {
      "idx": 1,
+     "seq": 46,
      "kind": "example",
      "rows": 5,
      "cols": 4,
@@ -9416,6 +9464,7 @@
     },
     {
      "idx": 2,
+     "seq": 47,
      "kind": "howto",
      "rows": 3,
      "cols": 3,
@@ -9469,6 +9518,7 @@
    "forms": [
     {
      "idx": 0,
+     "seq": 48,
      "kind": "blank",
      "rows": 19,
      "cols": 6,
@@ -9668,6 +9718,7 @@
    "forms": [
     {
      "idx": 0,
+     "seq": 49,
      "kind": "example",
      "rows": 19,
      "cols": 6,
@@ -9845,6 +9896,7 @@
     },
     {
      "idx": 1,
+     "seq": 50,
      "kind": "howto",
      "rows": 3,
      "cols": 3,
@@ -9937,6 +9989,7 @@
    "forms": [
     {
      "idx": 0,
+     "seq": 51,
      "kind": "blank",
      "rows": 4,
      "cols": 8,
@@ -10006,6 +10059,7 @@
     },
     {
      "idx": 1,
+     "seq": 52,
      "kind": "blank",
      "rows": 6,
      "cols": 5,
@@ -10090,6 +10144,7 @@
    "forms": [
     {
      "idx": 0,
+     "seq": 53,
      "kind": "blank",
      "rows": 6,
      "cols": 9,
@@ -10204,6 +10259,7 @@
    "forms": [
     {
      "idx": 0,
+     "seq": 54,
      "kind": "blank",
      "rows": 37,
      "cols": 24,
@@ -11251,6 +11307,7 @@
    "forms": [
     {
      "idx": 0,
+     "seq": 55,
      "kind": "howto",
      "rows": 3,
      "cols": 3,

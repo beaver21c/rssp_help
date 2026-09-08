@@ -34,11 +34,13 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 HP = "{http://www.hancom.co.kr/hwpml/2011/paragraph}"
+HP_P_TAG = "hp:p"
 
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "source" / "제6기_지역사회보장계획_수립안내_시군구.hwpx"
 OUT_SECTIONS = ROOT / "app" / "data" / "sections.json"
 OUT_TEMPLATE = ROOT / "app" / "data" / "template.hwpx"
+OUT_LAYOUT = ROOT / "app" / "data" / "layout"
 
 BODY_SECTION = "Contents/section2.xml"
 HEADER_XML = "Contents/header.xml"
@@ -151,6 +153,91 @@ def cell_text(tc: ET.Element) -> str:
     for sub in tc.iter(HP + "p"):
         lines.append("".join(t.text or "" for t in sub.iter(HP + "t")))
     return "\n".join(lines).strip()
+
+
+# ---------------------------------------------------------------------------
+# 원본 XML 조각 떼어내기 (도식용)
+# ---------------------------------------------------------------------------
+def span_of(xml: str, tag: str, start: int = 0) -> tuple[int, int, int, int] | None:
+    """여는 태그 자리에서 짝이 맞는 닫는 태그까지. (시작, 속내시작, 속내끝, 끝).
+
+    ElementTree로는 원본 글자를 그대로 돌려받을 수 없어 문자열을 직접 훑는다.
+    같은 이름의 태그가 겹쳐 있어도(셀 안의 표) 깊이를 세어 건너뛴다.
+    """
+    open_re = re.compile(rf"<{re.escape(tag)}(?=[\s/>])[^>]*?(/?)>")
+    both = re.compile(rf"<{re.escape(tag)}(?=[\s/>])[^>]*?(/?)>|</{re.escape(tag)}>")
+    first = open_re.search(xml, start)
+    if not first:
+        return None
+    if first.group(1) == "/":
+        return first.start(), first.end(), first.end(), first.end()
+    inner_start = first.end()
+    depth = 1
+    pos = inner_start
+    while True:
+        m = both.search(xml, pos)
+        if not m:
+            return None
+        if m.group(0).startswith("</"):
+            depth -= 1
+            if depth == 0:
+                return first.start(), inner_start, m.start(), m.end()
+        elif m.group(1) != "/":
+            depth += 1
+        pos = m.end()
+
+
+def each_span(xml: str, tag: str):
+    """같은 깊이의 태그를 차례로 돌려준다. 안에 든 같은 태그는 건너뛴다."""
+    pos = 0
+    while True:
+        sp = span_of(xml, tag, pos)
+        if not sp:
+            return
+        yield sp
+        pos = sp[3]
+
+
+def extract_layouts(section_xml: str, catalog: dict, outdir: Path) -> int:
+    """도식(kind='layout') 표를 담은 문단을 통째로 파일로 뽑는다.
+
+    전략체계도는 칸을 잘게 나눠 병합하고 칸마다 테두리를 달리 준 표다. 머리행이 없어
+    파이프 표로 받아쓸 수 없다. 배포용 template.hwpx의 header.xml이 원본과 바이트가
+    같으므로, 문단 XML을 그대로 옮겨 붙이면 병합·테두리·글꼴이 온전히 살아난다.
+    """
+    want = {f["seq"]: (n["id"], f["idx"])
+            for n in catalog["nodes"] for f in n["forms"] if f["kind"] == "layout"}
+    if not want:
+        return 0
+    sec = span_of(section_xml, "hs:sec")
+    body = section_xml[sec[1]:sec[2]] if sec else section_xml
+
+    outdir.mkdir(parents=True, exist_ok=True)
+    for old in outdir.glob("*.xml"):
+        old.unlink()
+
+    seq = 0
+    written = 0
+    by_key: dict[tuple[str, int], str] = {}
+    for p0, _, _, p3 in each_span(body, HP_P_TAG):
+        para = body[p0:p3]
+        tables = list(each_span(para, "hp:tbl"))
+        if not tables:
+            continue
+        for _ in tables:
+            seq += 1
+            if seq in want:
+                nid, idx = want[seq]
+                name = f"{BAD_NAME.sub('_', nid)}-{idx}.xml"
+                (outdir / name).write_text(para, encoding="utf-8")
+                by_key[(nid, idx)] = f"layout/{name}"
+                written += 1
+
+    for n in catalog["nodes"]:
+        for f in n["forms"]:
+            if f["kind"] == "layout":
+                f["xml"] = by_key.get((n["id"], f["idx"]))
+    return written
 
 
 def outer_tables(p: ET.Element) -> list[ET.Element]:
@@ -367,6 +454,7 @@ class Builder:
         self.by_id: dict[str, dict] = {}
         self.stack: list[dict] = []          # 깊이별 현재 마디
         self.titles: dict[str, int] = {}     # 제목 중복 세기
+        self.table_seq = 0                   # 본문에 나온 차례(도식 XML을 되찾는 열쇠)
         self.example_open = False            # '작성양식 및 예시' 구간 안인가
         self.prev_shape: tuple[int, int] | None = None   # 바로 앞 표의 골격
 
@@ -414,7 +502,7 @@ class Builder:
         return self.stack[-1] if self.stack else None
 
     # -- 표 ---------------------------------------------------------------
-    def add_table(self, node: dict, tbl: ET.Element) -> None:
+    def add_table(self, node: dict, tbl: ET.Element, seq: int) -> None:
         grid, widths, rows, cols = table_grid(tbl)
         flat = "\n".join(c for row in grid for c in row)
         shape = (rows, cols)
@@ -440,8 +528,9 @@ class Builder:
         header = header[:cols]
 
         if kind == "blank":
-            # 머리행이 통째로 빈 표는 전략체계도처럼 '표로 그린 도식'이다.
-            # 파이프 표로 받아쓸 수 없으니 작성용 양식에서 뺀다(27×29, 16×15 두 건).
+            # 머리행이 통째로 빈 표는 전략체계도처럼 '칸을 병합해 그린 체계도'다.
+            # 파이프 표로 받아쓸 수 없으니 작성용 양식에서 빼고 원본 XML을 떼어 둔다
+            # (27×29, 16×15 두 건).
             if not any(h.strip() for h in header):
                 kind = "layout"
             # 데이터 칸이 이미 절반 넘게 차 있으면 빈 양식이 아니라 작성례다
@@ -450,6 +539,7 @@ class Builder:
 
         form = {
             "idx": len(node["forms"]),
+            "seq": seq,
             "kind": kind,
             "rows": rows,
             "cols": cols,
@@ -470,6 +560,14 @@ class Builder:
     def feed(self, p: ET.Element) -> None:
         style = int(p.get("styleIDRef", "0"))
         text = para_text(p).strip()
+
+        # 표 차례는 문단에 들어서자마자 매긴다. 제목 문단에서 일찍 돌아서더라도
+        # 번호가 건너뛰면 안 된다 — extract_layouts가 이 번호로 원문을 되찾는다
+        tables = outer_tables(p)
+        seqs = []
+        for _ in tables:
+            self.table_seq += 1
+            seqs.append(self.table_seq)
 
         # 장 띠 그림
         banner = banner_title(p) if style == 0 else None
@@ -503,8 +601,8 @@ class Builder:
         marker = None if style in HEADING_STYLE_DEPTH or style == 40 else STYLE_MARKER.get(style)
         if marker and text and marker not in node["_marker_set"]:
             node["_marker_set"].append(marker)
-        for tbl in outer_tables(p):
-            self.add_table(node, tbl)
+        for tbl, seq in zip(tables, seqs):
+            self.add_table(node, tbl, seq)
 
     @staticmethod
     def parse_heading(depth: int, text: str) -> tuple[str, str] | None:
@@ -731,12 +829,15 @@ def main(argv: list[str] | None = None) -> int:
         catalog = build_catalog(parts[BODY_SECTION].decode("utf-8"),
                                 parts[HEADER_XML].decode("utf-8"),
                                 toc.decode("utf-8") if toc else None)
+        n_layout = extract_layouts(parts[BODY_SECTION].decode("utf-8"), catalog, OUT_LAYOUT)
         OUT_SECTIONS.parent.mkdir(parents=True, exist_ok=True)
         OUT_SECTIONS.write_text(
             json.dumps(catalog, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
         s = catalog["stats"]
         print(f"[됨] {OUT_SECTIONS.relative_to(ROOT)} — 장 {s['chapters']}, "
               f"마디 {s['nodes']}, 표 {s['forms']}, 지시문 {s['howtos']}")
+        if n_layout:
+            print(f"[됨] {OUT_LAYOUT.relative_to(ROOT)}/ — 도식 {n_layout}개를 원본 XML로 떼어 둠")
 
     if both or args.template:
         size = build_template(args.source, OUT_TEMPLATE)
