@@ -5,29 +5,103 @@
  * 시험 틀을 쓰지 않는다. 어긋나면 사유를 찍고 process.exitCode = 1로 끝낸다.
  *
  * 보는 것
- *  1. JS와 파이썬이 만든 `Contents/section2.xml`이 글자까지 같은가
+ *  1. JS와 파이썬이 만든 본문 구역 XML이 글자까지 같은가
  *  2. 자동 번호가 걸린 양식에서도 같은가
- *  3. 손대면 안 되는 파일(header·section0·section1·settings)이 그대로인가
+ *  3. 본문 구역 말고 템플릿의 모든 파일이 SHA-256 그대로인가
  *  4. 그림을 넣었을 때 hp:pic·BinData·content.hpf가 제대로 붙는가
  *     (파이썬 빌더에는 그림이 없어 engine.py가 만든 hp:pic과 맞대어 본다)
  *  5. 빌드 → 되돌리기 왕복에서 본문·표·각주가 살아남는가
+ *  6. 깨진 입력(cols 합 0·제어문자·자리표 위조·겹친 빌드·깨진 zip)을 짚는가
+ *
+ * 자산은 `PARITY_KIT`가 가리키는 꾸러미를 먼저 보고, 없으면 저장소의
+ * `app/data/template.hwpx`와 설치된 `hwpx_studio`로 그 자리에서 만든다.
  */
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { deflateSync } from 'node:zlib';
 
 import { buildForm, parseInput, lintParsed, detectImageSize } from '../app/assets/hwpx-form.js';
 import { readBack } from '../app/assets/readback.js';
-import { unzip } from '../app/assets/zip.js';
+import { crc32, unzip } from '../app/assets/zip.js';
 
-const KIT ='/tmp/claude-0/-home-user-rssp-help/393a50e4-1d17-5b67-a48d-cb849ff1da1c'
-  + '/scratchpad/verify/guide6_kit2';
-const BUILDER = path.join(KIT, 'build_form.py');
-const TEMPLATE = path.join(KIT, 'template.hwpx');
-const IMAGE = path.join(KIT, 'core22.png');
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const work = mkdtempSync(path.join(tmpdir(), 'form-parity-'));
+
+/** 24비트 PNG 한 장. 그림 검사에 쓸 원본을 그 자리에서 만든다. */
+function makePng(w, h) {
+  const chunk = (type, data) => {
+    const head = Buffer.alloc(4);
+    head.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+    const tail = Buffer.alloc(4);
+    tail.writeUInt32BE(crc32(new Uint8Array(body)));
+    return Buffer.concat([head, body, tail]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8;            // 비트 깊이
+  ihdr[9] = 2;            // 트루컬러
+  const raw = Buffer.alloc(h * (1 + w * 3));
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < w; x += 1) {
+      const at = y * (1 + w * 3) + 1 + x * 3;
+      raw[at] = (x * 7) & 0xff;
+      raw[at + 1] = (y * 11) & 0xff;
+      raw[at + 2] = 0x40;
+    }
+  }
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+/**
+ * 대조에 쓸 자산을 찾는다.
+ *
+ * 손으로 뽑아 둔 꾸러미가 있으면 그것을 쓰고, 없으면(CI가 그렇다) 저장소가
+ * 들고 있는 `app/data/template.hwpx`와 설치된 `hwpx_studio`로 그 자리에서
+ * 꾸러미를 만든다. 시험이 이 세션 임시폴더에 매여 있으면 CI에서 돌지 않는다.
+ */
+function resolveKit() {
+  const kit = process.env.PARITY_KIT || '';
+  if (kit && existsSync(path.join(kit, 'build_form.py'))) {
+    return {
+      where: kit,
+      builder: path.join(kit, 'build_form.py'),
+      template: path.join(kit, 'template.hwpx'),
+      form: path.join(kit, 'form.json'),
+    };
+  }
+  const builder = execFileSync('python3', ['-c',
+    'import pathlib, hwpx_studio;'
+    + 'print(pathlib.Path(hwpx_studio.__file__).parent / "assets" / "build_form.py")'],
+  { encoding: 'utf8' }).trim();
+  if (!existsSync(builder)) throw new Error(`파이썬 빌더를 찾지 못했다: ${builder}`);
+  const template = path.join(ROOT, 'app/data/template.hwpx');
+  const form = path.join(work, 'kit.form.json');
+  // 양식 카드도 같은 템플릿에서 뽑는다. 두 빌더가 같은 카드를 봐야 대조가 된다
+  execFileSync('python3', ['-c',
+    'import json, sys;'
+    + 'from hwpx_studio.formkit import analyze;'
+    + 'json.dump(analyze(sys.argv[1]).form, open(sys.argv[2], "w", encoding="utf-8"),'
+    + ' ensure_ascii=False, indent=2)', template, form], { encoding: 'utf8' });
+  return { where: '저장소 자산 + 설치된 hwpx_studio', builder, template, form };
+}
+
+const KIT = resolveKit();
+const BUILDER = KIT.builder;
+const TEMPLATE = KIT.template;
+const IMAGE = path.join(work, 'core22.png');
+writeFileSync(IMAGE, existsSync(path.join(path.dirname(BUILDER), 'core22.png'))
+  ? readFileSync(path.join(path.dirname(BUILDER), 'core22.png'))
+  : makePng(1564, 1757));
 
 const failures = [];
 const fail = (why) => failures.push(why);
@@ -139,8 +213,7 @@ async function sectionOf(bytes, name) {
 // ──────────────────────────────────────────────────────────────
 // 1·2. 파이썬과 글자까지 같은가
 // ──────────────────────────────────────────────────────────────
-const work = mkdtempSync(path.join(tmpdir(), 'form-parity-'));
-const baseForm = JSON.parse(readFileSync(path.join(KIT, 'form.json'), 'utf8'));
+const baseForm = JSON.parse(readFileSync(KIT.form, 'utf8'));
 const templateBytes = new Uint8Array(readFileSync(TEMPLATE));
 
 /** 자동 번호를 걸어 둔 변형. Numbering 이식이 맞는지 보려면 이게 있어야 한다. */
@@ -157,6 +230,7 @@ const cases = [
   ['자동 번호 양식', numberedForm, MANUSCRIPT],
 ];
 
+console.log(`대조 자산: ${KIT.where} — 본문 구역 ${baseForm.section}`);
 console.log('── 1층 파이썬 대조 ' + '─'.repeat(28));
 const built = new Map();
 for (const [label, form, text] of cases) {
@@ -188,17 +262,20 @@ for (const [label, form, text] of cases) {
   const pySection = await sectionOf(new Uint8Array(readFileSync(outPath)), form.section);
   const a = normalizeRandom(jsSection);
   const b = normalizeRandom(pySection);
-  if (a !== b) fail(`${label}: section2.xml이 파이썬과 다르다 — ${firstDiff(a, b)}`);
-  else ok(`${label} — section2.xml ${a.length}글자가 파이썬과 완전 일치`);
+  const where = form.section.replace(/^Contents\//, '');
+  if (a !== b) fail(`${label}: ${where}이 파이썬과 다르다 — ${firstDiff(a, b)}`);
+  else ok(`${label} — ${where} ${a.length}글자가 파이썬과 완전 일치`);
 }
 
 // ──────────────────────────────────────────────────────────────
 // 3. 손대면 안 되는 파일
 // ──────────────────────────────────────────────────────────────
 console.log('── 2층 보존 검사 ' + '─'.repeat(30));
-const KEEP = ['Contents/header.xml', 'Contents/section0.xml',
-  'Contents/section1.xml', 'settings.xml'];
 const templateEntries = await unzip(templateBytes);
+// 본문 구역·매니페스트·미리보기 말고는 한 바이트도 달라지면 안 된다.
+// 목록을 손으로 적어 두면 양식이 바뀔 때 검사가 조용히 헐거워진다
+const TOUCHABLE = new Set([baseForm.section, 'Contents/content.hpf', 'Preview/PrvText.txt']);
+const KEEP = [...templateEntries.keys()].filter((n) => !TOUCHABLE.has(n));
 const baseResult = built.get('기본 양식');
 if (!baseResult) {
   fail('보존 검사: 기본 양식 산출물이 없어 건너뛴다');
@@ -211,7 +288,7 @@ if (!baseResult) {
     if (!before || !after) { fail(`보존 검사: ${name}이 한쪽에 없다`); continue; }
     if (sha256(before) !== sha256(after)) fail(`보존 검사: ${name}이 바뀌었다`);
   }
-  if (clean(from)) ok(`${KEEP.join(', ')} SHA-256 그대로`);
+  if (clean(from)) ok(`본문 구역 말고 ${KEEP.length}개 파일이 SHA-256 그대로`);
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -246,9 +323,13 @@ if (picResult) {
     else if (sha256(entries.get(binName)) !== sha256(imageBytes)) {
       fail(`그림 검사: ${binName}의 바이트가 원본과 다르다`);
     }
-    if (id === 'image1') {
-      fail('그림 검사: 양식에 이미 있는 image1과 이름이 겹쳤다');
-    }
+    // 양식이 이미 들고 있는 그림 이름과 겹치면 한글이 딴 그림을 보여 준다
+    const taken = new Set([...templateEntries.keys()]
+      .filter((n) => n.startsWith('BinData/'))
+      .map((n) => n.slice(8).replace(/\.[^.]*$/, '')));
+    const tplHpf = decoder.decode(templateEntries.get('Contents/content.hpf'));
+    for (const m of tplHpf.matchAll(/<opf:item\s+id="([^"]*)"/g)) taken.add(m[1]);
+    if (taken.has(id)) fail(`그림 검사: 양식에 이미 있는 '${id}'과 이름이 겹쳤다`);
 
     const hpf = decoder.decode(entries.get('Contents/content.hpf'));
     if (!hpf.includes(`<opf:item id="${id}" href="${binName}"`)) {
@@ -353,6 +434,96 @@ console.log('── 5층 파서 검사 ' + '─'.repeat(30));
     fail('파서 검사: 내용 없는 각주를 그냥 넘겼다');
   }
   if (clean(from)) ok('표·표주·각주·장 제목·열 너비를 모두 알아본다');
+}
+
+// ──────────────────────────────────────────────────────────────
+// 6. 경계 — 깨진 입력을 조용히 통과시키지 않는가
+// ──────────────────────────────────────────────────────────────
+console.log('── 6층 경계 검사 ' + '─'.repeat(30));
+{
+  const from = mark();
+
+  // {cols} 합이 0이면 비율을 나눌 수 없다. 예전에는 width="NaN"이 그대로 나갔다
+  const zeroCols = await buildForm(templateBytes, baseForm,
+    '□ 앞\n\n{cols=0,0,0}\n| 가 | 나 | 다 |\n| 1 | 2 | 3 |\n\n□ 뒤\n', {});
+  const zeroSection = await sectionOf(zeroCols.bytes, baseForm.section);
+  const widths = [...zeroSection.matchAll(/<hp:cellSz width="([^"]*)"/g)].map((m) => m[1]);
+  if (widths.some((w) => !Number.isFinite(Number(w)))) {
+    fail(`경계 검사: 셀 너비에 숫자가 아닌 값이 있다 — ${JSON.stringify(widths.slice(0, 6))}`);
+  }
+  if (!zeroCols.issues.some((s) => s.includes('합이 0'))) {
+    fail('경계 검사: {cols} 합이 0인데 알리지 않았다');
+  }
+
+  // 계약이 요구하는 번호매기기 네 가지 가운데 AUTO_PAREN이 빠져 있었다
+  const parenForm = JSON.parse(JSON.stringify(baseForm));
+  for (const level of parenForm.levels) {
+    if (level.key === 'h2') level.numbering = 'AUTO_PAREN';
+  }
+  const parenSection = await sectionOf(
+    (await buildForm(templateBytes, parenForm, '## 첫\n\n## 둘\n', {})).bytes,
+    parenForm.section);
+  for (const want of ['1) 첫', '2) 둘']) {
+    if (!parenSection.includes(`<hp:t>${want}</hp:t>`)) {
+      fail(`경계 검사: AUTO_PAREN이 '${want}'를 찍지 않았다`);
+    }
+  }
+
+  // 원고 글자가 그림 자리표와 겹쳐도 글이 그림으로 바뀌면 안 된다
+  const png = new Uint8Array(readFileSync(IMAGE));
+  try {
+    const forged = await buildForm(templateBytes, baseForm,
+      '□ __IMAGE_PLACEHOLDER_0__\n\n![](core22.png)\n',
+      { images: new Map([['core22.png', png]]) });
+    const forgedSection = await sectionOf(forged.bytes, baseForm.section);
+    const forgedPics = (forgedSection.match(/<hp:pic /g) || []).length;
+    if (forgedPics !== 1) fail(`경계 검사: hp:pic이 ${forgedPics}개다 (1개여야 한다)`);
+    if (!forgedSection.includes('<hp:t>__IMAGE_PLACEHOLDER_0__</hp:t>')) {
+      fail('경계 검사: 자리표와 같은 글자를 적었더니 본문이 그림으로 바뀌었다');
+    }
+  } catch (err) {
+    fail(`경계 검사: 자리표와 같은 글자를 적었더니 빌드가 터졌다 — ${err.message}`);
+  }
+
+  // 빌드가 겹쳐도 같은 원고는 같은 문서를 내야 한다(일련번호가 모듈 하나에 있다)
+  const [p1, p2] = await Promise.all([
+    buildForm(templateBytes, baseForm, '□ 가\n\n| a | b |\n| 1 | 2 |\n', {}),
+    buildForm(templateBytes, baseForm, '□ 가\n\n| a | b |\n| 1 | 2 |\n', {}),
+  ]);
+  const s1 = await sectionOf(p1.bytes, baseForm.section);
+  const s2 = await sectionOf(p2.bytes, baseForm.section);
+  if (s1 !== s2) fail('경계 검사: 빌드를 겹쳐 돌리니 같은 원고가 다른 문서를 냈다');
+
+  // 깨진 템플릿은 조용히 넘어가지 않는다
+  let threw = '';
+  try {
+    await buildForm(new Uint8Array(1000), baseForm, '□ 가\n', {});
+  } catch (err) { threw = err.message; }
+  if (!threw) fail('경계 검사: 깨진 zip을 템플릿으로 줬는데 그냥 만들어 냈다');
+
+  // PDF·한글에서 붙여넣은 원고에는 XML 1.0이 못 받는 제어문자가 섞여 온다.
+  // 그대로 내보내면 태그 세기는 통과하지만 한글이 파일을 열지 못한다
+  const ctrl = await buildForm(templateBytes, baseForm,
+    '○ 제어\u0007문자\u0000 낀\u001f 줄\n', {});
+  const ctrlSection = await sectionOf(ctrl.bytes, baseForm.section);
+  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(ctrlSection)) {
+    fail('경계 검사: 제어문자가 구역 XML에 그대로 나갔다');
+  }
+  if (!ctrlSection.includes('제어문자 낀 줄')) {
+    fail('경계 검사: 제어문자를 떨어뜨리면서 글자까지 잃었다');
+  }
+  writeFileSync(path.join(work, 'ctrl.xml'), ctrlSection, 'utf8');
+  try {
+    execFileSync('python3', ['-c',
+      'import sys, xml.dom.minidom; xml.dom.minidom.parse(sys.argv[1])',
+      path.join(work, 'ctrl.xml')], { encoding: 'utf8' });
+  } catch (err) {
+    fail(`경계 검사: 진짜 XML 파서가 산출물을 거부했다 — ${String(err.message).slice(0, 160)}`);
+  }
+
+  if (clean(from)) {
+    ok('cols 합 0·AUTO_PAREN·자리표 위조·동시 빌드·깨진 zip·제어문자를 모두 짚는다');
+  }
 }
 
 rmSync(work, { recursive: true, force: true });

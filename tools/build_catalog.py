@@ -50,6 +50,10 @@ HOWTO_MARK = "◆ 작성 취지 및 방법 ◆"
 #: 작성례 구간을 여는 문단. 이 문단부터 다음 지시문 박스까지의 표는 작성례다
 EXAMPLE_MARK = "작성양식 및 예시"
 
+#: 지시문 박스 안 라벨. 안내서가 '작성취지'/'작성 취지'를 섞어 쓴다
+RE_LABEL_PURPOSE = re.compile(r"작성\s*취지")
+RE_LABEL_METHOD = re.compile(r"작성\s*방법")
+
 #: 파일명에 못 쓰는 글자
 BAD_NAME = re.compile(r'[/\\:*?"<>|]')
 
@@ -223,20 +227,28 @@ def table_grid(tbl: ET.Element) -> tuple[list[list[str]], list[int], int, int]:
 
 
 def col_percent(widths: dict[int, int], cols: int) -> list[int]:
-    """열 너비를 백분율 정수로. 합이 반드시 100이 되게 마지막 열에서 맞춘다."""
+    """열 너비를 백분율 정수로 고친다. 합은 반드시 100이고 음수는 없다.
+
+    반올림 나머지를 마지막 열에 몰아주면 열이 많을 때 마지막 열이 통째로
+    부풀거나(29열 등폭 표에서 3,3,…,16) 아예 음수가 된다(120열이면 -19).
+    그래서 내림 뒤 남은 몫을 소수부가 큰 열부터 하나씩 나눠 준다.
+    """
     if cols <= 0:
         return []
     known = [w for w in widths.values() if w > 0]
     fallback = sum(known) // len(known) if known else 1
     raw = [widths.get(c) or fallback for c in range(cols)]
     total = sum(raw) or 1
-    pct = [max(1, round(w * 100 / total)) for w in raw]
-    pct[-1] += 100 - sum(pct)
-    if pct[-1] < 1:  # 열이 너무 많아 마지막이 눌리면 가장 넓은 열에서 덜어 온다
-        deficit = 1 - pct[-1]
-        pct[-1] = 1
-        biggest = max(range(cols), key=lambda i: pct[i])
-        pct[biggest] -= deficit
+    share = [w * 100 / total for w in raw]
+    pct = [int(s) for s in share]
+    left = 100 - sum(pct)
+    # 소수부가 큰 열부터, 같으면 넓은 열부터 1씩 얹는다
+    order = sorted(range(cols), key=lambda i: (-(share[i] - pct[i]), -raw[i], i))
+    for i in range(min(left, cols)):
+        pct[order[i]] += 1
+    left -= min(left, cols)
+    if left > 0:            # 열이 100개를 넘으면 남는 몫을 가장 넓은 열에 얹는다
+        pct[max(range(cols), key=lambda i: raw[i])] += left
     return pct
 
 
@@ -251,16 +263,37 @@ def fill_ratio(grid: list[list[str]]) -> float:
 # 지시문 박스
 # ---------------------------------------------------------------------------
 def howto_from(grid: list[list[str]]) -> dict:
-    """지시문 박스에서 작성취지·작성방법을 갈라낸다."""
+    """지시문 박스에서 작성취지·작성방법을 갈라낸다.
+
+    라벨에 사이띄개가 들어간 박스가 있다(별첨 1은 '작성 방법'으로 적혀 있다).
+    붙여 쓴 꼴만 찾으면 그 박스는 method가 비고 작성방법 글월이 통째로
+    purpose 꼬리에 붙는다. 그래서 라벨은 사이띄개를 허용해 찾는다.
+    박스 머리글 「◆ 작성 취지 및 방법 ◆」에도 '작성 취지'가 들어 있으므로
+    머리글 뒤부터 라벨을 찾는다.
+    """
     raw = "\n".join(c for row in grid for c in row if c.strip())
+    head = raw.find(HOWTO_MARK)
+    start = head + len(HOWTO_MARK) if head >= 0 else 0
+
+    def label(pat: re.Pattern[str]) -> tuple[int, int] | None:
+        m = pat.search(raw, start)
+        return (m.start(), m.end()) if m else None
+
+    p = label(RE_LABEL_PURPOSE)
+    m = label(RE_LABEL_METHOD)
     purpose = method = None
-    pi = raw.find("작성취지")
-    mi = raw.find("작성방법")
-    if pi >= 0 and mi > pi:
-        purpose = raw[pi + len("작성취지"):mi].strip() or None
-        method = raw[mi + len("작성방법"):].strip() or None
-    elif pi >= 0:
-        purpose = raw[pi + len("작성취지"):].strip() or None
+    if p and m:
+        first, second = (p, m) if p[0] < m[0] else (m, p)
+        head_text = raw[first[1]:second[0]].strip() or None
+        tail_text = raw[second[1]:].strip() or None
+        if p[0] < m[0]:
+            purpose, method = head_text, tail_text
+        else:
+            method, purpose = head_text, tail_text
+    elif p:
+        purpose = raw[p[1]:].strip() or None
+    elif m:
+        method = raw[m[1]:].strip() or None
     return {"purpose": purpose, "method": method, "raw": raw, "chars": len(raw)}
 
 
