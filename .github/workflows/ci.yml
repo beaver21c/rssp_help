@@ -46,13 +46,19 @@ jobs:
       - name: 카탈로그·템플릿 검사
         run: python3 tests/test_catalog.py
 
+      # 시험을 새로 넣으면 여기에도 넣는다. 목록에서 빠진 시험은 CI가 지켜 주지 않는다
+      # (README 「시험」 절과 같은 차례로 둔다).
       - name: 모듈 시험
         run: |
           node tests/test_form_parity.mjs
           node tests/test_docread.mjs
           node tests/test_attach.mjs
           node tests/test_indicator.mjs
+          node tests/test_trend.mjs
+          node tests/test_skillpack.mjs
           node tests/test_catalog_js.mjs
+          node tests/test_quota.mjs
+          node tests/test_context.mjs
           node tests/test_gemini.mjs
 
       - name: 브라우저 통합 시험 (65개 마디)
