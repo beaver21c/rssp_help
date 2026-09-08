@@ -324,6 +324,41 @@ export function narrate(rows, opts) {
   bullets(high, `비교집단에서 값이 큰 쪽 지표${high.length ? ` ${high.length}개` : ''}`, 'high');
   bullets(low, `비교집단에서 값이 작은 쪽 지표${low.length ? ` ${low.length}개` : ''}`, 'low');
 
+  /* 지표가 많을 때는 하나하나 풀어 쓸 것이 아니라 **차이가 있는 것과 없는 것**을 갈라야
+     읽는 사람이 무엇을 볼지 안다. 가르는 기준은 비교집단 사분위 구간(Q1~Q3)이다 —
+     그 안이면 비슷한 수준, 밖이면 뚜렷이 다른 수준. */
+  const shown = new Set([...high, ...low].map((r) => r.code));
+  const rest = scored.filter((r) => !shown.has(r.code));
+  const outside = rest.filter((r) => r.q1 != null && r.q3 != null
+    && (r.mine < r.q1 || r.mine > r.q3));
+  const inside = rest.filter((r) => !(r.q1 != null && r.q3 != null
+    && (r.mine < r.q1 || r.mine > r.q3)));
+
+  if (outside.length) {
+    L.push(`○ 그 밖에 비교집단과 뚜렷이 다른 지표 ${outside.length}개 (Q1~Q3 구간 밖)`);
+    for (const r of outside) {
+      const u = r.unit ? ' ' + r.unit : '';
+      L.push(`- ${valLine(r)} — 비교집단 ${r.n}곳 중 ${r.rank}위, `
+        + `Q1~Q3 ${fmtRef(r.q1)}~${fmtRef(r.q3)}${u} ${r.mine > r.q3 ? '위' : '아래'}`);
+    }
+    L.push('');
+  }
+  if (inside.length) {
+    /* 비슷한 수준은 이름만 묶어 한 줄로. 지면과 읽는 품을 아끼려는 것이다 */
+    L.push(`○ 비교집단과 비슷한 수준인 지표 ${inside.length}개 (Q1~Q3 구간 안) — 개별 서술 생략`);
+    L.push(`- ${inside.map((r) => r.name).join(', ')}`);
+    L.push('');
+  }
+
+  /* 값의 뜻과 정책 방향은 자료만으로 나오지 않는다. 자리와 물음만 두고 담당자·AI가 채운다.
+     빈칸 표시(○○○○)는 줄 끝에 둔다. 줄머리에 두면 한글이 붙이는 글머리표와 겹쳐
+     [이중 기호]로 걸려 산출이 통째로 막힌다 */
+  L.push('○ 종합 진단과 정책 방향 — 담당자 작성');
+  L.push('- 위 차이들을 묶어 볼 때 우리 지역의 상태를 한 문장으로 → ○○○○');
+  L.push('- 그래서 어떤 영역에 무엇을 먼저 해야 하는지 → ○○○○');
+  L.push('- 이 진단이 제1절 추진전략과 어떻게 이어지는지 → ○○○○');
+  L.push('');
+
   L.push('○ 해석 시 유의점');
   L.push('- 값이 높다고 곧 여건이 좋은 것은 아니다. 지표마다 방향이 달라 개별 지표의 의미를 확인하고 읽는다');
   L.push(`- 순위는 비교집단 안에서 값이 큰 순서이며, 분모가 되는 지역 수(${nMin === nMax ? nMax : `${nMin}~${nMax}`}곳)를 함께 본다`);

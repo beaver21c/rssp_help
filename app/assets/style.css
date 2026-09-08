@@ -162,6 +162,14 @@ button.btn.sm{padding:5px 11px;font-size:12px;font-weight:500}
 /* ── 작업 폴더 ── */
 .ck{display:flex;align-items:flex-start;gap:7px;font-size:12.5px;margin:10px 0 0;cursor:pointer;line-height:1.5}
 .ck input{margin-top:3px;flex:none}
+/* 글은 한 덩이로 묶어 둔다. 맨 글자와 <span class=hint>가 따로 칸을 차지하면
+   좁은 칸에서 두 줄이 나란히 갈라져 읽을 수 없게 된다 */
+.ck > span{flex:1 1 auto;min-width:0}
+.ck .hint{color:var(--ink-3);margin-left:6px}
+/* 기간처럼 칸 둘을 한 줄에 두는 자리. select 는 width:100% 라 그냥 두면 줄이 넘어간다 */
+.span2{display:flex;gap:8px;align-items:center}
+.span2 select{flex:1 1 0;min-width:0}
+.span2 .tilde{flex:none;color:var(--ink-3);font-size:12.5px}
 #ws-files{max-height:210px;overflow:auto}
 #ws-files li{gap:7px}
 #ws-files .btn{margin-left:auto;flex:none}
