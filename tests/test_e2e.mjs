@@ -101,20 +101,51 @@ const sha = async (u8) => Array.from(new Uint8Array(await crypto.subtle.digest('
   .map((b) => b.toString(16).padStart(2, '0')).join('');
 const txt = (u8) => new TextDecoder().decode(u8);
 
-/* section XML에서 표를 뽑아 행·열 수와 머리행을 돌려준다 */
-function tablesOf(xml) {
-  const out = [];
-  const re = /<hp:tbl\b([^>]*)>([\s\S]*?)<\/hp:tbl>/g;
+/* 여는 태그 위치에서 짝이 맞는 닫는 태그까지의 구간을 돌려준다.
+   안내서 표는 셀 안에 표가 또 들어 있어 비탐욕 정규식으로는 구간이 잘린다. */
+function spanOf(xml, tag, from) {
+  const open = new RegExp(`<${tag}\\b[^>]*?(/?)>`, 'g');
+  const close = `</${tag}>`;
+  open.lastIndex = from;
+  const first = open.exec(xml);
+  if (!first) return null;
+  if (first[1] === '/') return { start: first.index, inner: '', end: open.lastIndex };
+  let depth = 1, i = open.lastIndex;
+  const innerStart = i;
+  const scan = new RegExp(`<${tag}\\b[^>]*?(/?)>|${close}`, 'g');
+  scan.lastIndex = i;
   let m;
-  while ((m = re.exec(xml))) {
-    const attr = m[1], body = m[2];
+  while ((m = scan.exec(xml))) {
+    if (m[0] === close) { depth--; if (!depth) return { start: first.index, inner: xml.slice(innerStart, m.index), end: scan.lastIndex, attr: first[0] }; }
+    else if (m[1] !== '/') depth++;
+  }
+  return null;
+}
+
+/* section XML에서 표를 뽑아 행·열 수와 머리행을 돌려준다(중첩 표 포함, 바깥 표부터) */
+function tablesOf(xml, deep = true) {
+  const out = [];
+  let at = 0;
+  for (;;) {
+    const sp = spanOf(xml, 'hp:tbl', at);
+    if (!sp) break;
+    const attr = sp.attr || '';
     const rows = Number((attr.match(/rowCnt="(\d+)"/) || [])[1] || 0);
     const cols = Number((attr.match(/colCnt="(\d+)"/) || [])[1] || 0);
-    // 첫 행(<hp:tr>)의 셀 텍스트
-    const tr = (body.match(/<hp:tr>[\s\S]*?<\/hp:tr>/) || [''])[0];
-    const header = Array.from(tr.matchAll(/<hp:tc\b[\s\S]*?<\/hp:tc>/g))
-      .map((c) => Array.from(c[0].matchAll(/<hp:t>([\s\S]*?)<\/hp:t>/g)).map((t) => t[1]).join('').trim());
+    const tr = spanOf(sp.inner, 'hp:tr', 0);
+    const header = [];
+    if (tr) {
+      let ci = 0;
+      for (;;) {
+        const tc = spanOf(tr.inner, 'hp:tc', ci);
+        if (!tc) break;
+        header.push(Array.from(tc.inner.matchAll(/<hp:t>([\s\S]*?)<\/hp:t>/g)).map((t) => t[1]).join('').trim());
+        ci = tc.end;
+      }
+    }
     out.push({ rows, cols, header });
+    if (deep) out.push(...tablesOf(sp.inner, true));   // 셀 안의 표도 센다
+    at = sp.end;
   }
   return out;
 }

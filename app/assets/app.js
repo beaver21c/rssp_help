@@ -9,7 +9,7 @@ import { extractAttachment, SUPPORTED } from './attach.js';
 import { loadIndex, groupCodes, analyze, narrate, KEY_CODES } from './indicator.js';
 import { renderComparisonChart } from './chart.js';
 import * as gem from './gemini.js';
-import { readBack } from './readback.js';
+import { readBodyText } from './docread.js';
 
 /* ───────── 공용 ───────── */
 const $ = (s) => document.querySelector(s);
@@ -500,10 +500,15 @@ $('#c-run').onclick = async () => {
   if (!S.cDoc) return;
   say('#c-status', '되돌리는 중…', 'busy');
   try {
-    const ab = S.cDoc.buffer.slice(S.cDoc.byteOffset, S.cDoc.byteOffset + S.cDoc.byteLength);
-    const rb = await readBack(ab);
+    const rb = await readBodyText(S.cDoc, S.form);
     $('#c-draft').value = rb.text;
     const out = [];
+    if (rb.mode === 'guess') {
+      out.push({ lv: 'warn', msg: '이 문서는 안내서 서식으로 만든 것이 아니라 스타일 번호가 맞지 않는다 — 글자 모양으로 레벨을 추정했으니 마커를 확인할 것' });
+    }
+    if (rb.skipped.length) {
+      out.push({ lv: 'warn', msg: `본문 구역 ${rb.section}만 검사했다. 건너뛴 구역: ${rb.skipped.join(', ')}(표지·제출문 등)` });
+    }
     try {
       const parsed = parseInput(rb.text, S.form);
       for (const w of lintParsed(parsed, S.form)) out.push({ lv: 'warn', msg: w });
@@ -526,7 +531,8 @@ $('#c-run').onclick = async () => {
     }
     showIssues('#c-issues', '#c-isum', null, out);
     $('#c-make').disabled = false; $('#c-fix').disabled = !gem.getKey();
-    say('#c-status', `되돌리기 완료 · 블록 ${rb.blocks.length}개 · 지적 ${out.length}건`, out.some((o) => o.lv === 'err') ? 'err' : 'ok');
+    say('#c-status', `되돌리기 완료 · 문단 ${rb.total}개(양식 대조 ${rb.matched}개) · 지적 ${out.length}건`,
+      out.some((o) => o.lv === 'err') ? 'err' : 'ok');
   } catch (e) {
     say('#c-status', '실패 — ' + e.message, 'err');
   }
