@@ -498,6 +498,45 @@ head('API 키 — 실호출 확인 절차와 모델 교체 대비');
   ok(msg.includes('API key not valid'), '구글이 준 사유를 그대로 보여 준다', msg);
   ok(await page.isDisabled('#w-gen'), '확인이 깨지면 AI 기능이 다시 잠긴다');
 
+  // 4-3) 무료 등급 하루 몫이 떨어지면 스스로 멈춘다
+  const DAILY = 'You exceeded your current quota. quota_metric: '
+    + 'generativelanguage.googleapis.com/generate_content_free_tier_requests, '
+    + 'quota_id: GenerateRequestsPerDayPerProjectPerModel-FreeTier, limit: 1000';
+  mock.list = () => listOK(['gemini-3.5-flash-lite', 'gemini-3.5-flash']);
+  mock.gen = () => errJ(429, DAILY);
+  await page.click('#k-go');          // 실패 상태에서도 눌리는 쪽으로(다시 확인은 접힌 줄에 있다)
+  await waitState('fail');
+  ok(await page.isDisabled('#w-gen'), '몫이 떨어지면 AI 단추가 잠긴다');
+  const spentTxt = await page.textContent('#k-fix');
+  ok(/태평양 자정/.test(spentTxt), '되돌아오는 기준을 밝힌다', spentTxt);
+  ok(/양식 점검|양식만 넣기/.test(spentTxt), '그동안 쓸 수 있는 기능을 알려 준다', spentTxt);
+  ok(await page.locator('#w-skel').isEnabled(), '몫이 떨어져도 [양식만 넣기]는 살아 있다');
+  // 장부에 적혔으므로 다시 눌러도 그물을 타지 않는다
+  const beforeQ = urls.length;
+  await page.click('#k-go');
+  await page.waitForTimeout(300);
+  const after = urls.slice(beforeQ).filter((u) => /:generateContent$/.test(u));
+  ok(after.length === 0, '소진 뒤에는 생성 호출을 아예 내보내지 않는다', `${after.length}회`);
+
+  // 4-4) 내려간 모델 — 구글이 지목한 대체 이름으로 갈아탄다(실제로 받은 문구)
+  await page.evaluate(() => { try { localStorage.removeItem('gemini_usage'); } catch (e) { /* */ } });
+  const RETIRED = 'This model models/gemini-2.5-flash-lite is no longer available to new users. '
+    + 'Please update your code to use models/gemini-3.5-flash-lite for the latest features.';
+  mock.list = () => listOK(['gemini-2.5-flash-lite']);
+  mock.gen = (m) => (m === 'gemini-3.5-flash-lite' ? genOK('OK') : errJ(400, RETIRED));
+  await page.click('#k-go');
+  await waitState('ok');
+  const why4 = await page.textContent('#k-okwhy');
+  // 목록에는 내려간 이름 하나뿐인데 답한 것은 구글이 지목한 새 이름이다 = 갈아탄 증거
+  ok(why4.includes('gemini-3.5-flash-lite'), '구글이 지목한 대체 모델로 갈아탄다', why4);
+  ok(!why4.includes('gemini-2.5-flash-lite'), '내려간 이름을 응답 모델로 적지 않는다', why4);
+  const listedOnly = urls.filter((u) => /:generateContent$/.test(u)).slice(-2);
+  ok(listedOnly.some((u) => u.includes('gemini-2.5-flash-lite'))
+     && listedOnly.some((u) => u.includes('gemini-3.5-flash-lite')),
+    '내려간 이름을 한 번 시도한 뒤 대체 이름으로 넘어간다', listedOnly.join(' | '));
+  ok(/오늘 \d+회/.test(why4), '오늘 쓴 횟수를 보여 준다', why4);
+  ok(/되돌아옴/.test(why4), '몫이 되돌아오는 시각을 보여 준다', why4);
+
   // 4-2) 크레딧이 바닥난 계정 — 실제로 겪은 사유다. 기다리라고 하면 안 되고,
   //      모델을 더 두들겨도 안 되며, 어디를 손봐야 하는지 짚어 줘야 한다
   const DEPLETED = 'Your prepayment credits are depleted. Please go to AI Studio at '
@@ -505,6 +544,8 @@ head('API 키 — 실호출 확인 절차와 모델 교체 대비');
   const before = urls.length;
   mock.list = () => listOK(['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash']);
   mock.gen = () => errJ(429, DEPLETED);
+  await page.click('#k-edit');        // 접힌 줄에서 입력 칸을 다시 편다
+  await waitState('need');
   await page.fill('#k-in', FAKE);
   await page.click('#k-go');
   await waitState('fail');

@@ -9,12 +9,13 @@
 "use strict";
 
 import {
-  BASE, RETRY_MS, FALLBACK_MODELS, PING,
+  BASE, RETRY_MS, FALLBACK_MODELS, PING, DEFAULT_FAMILY,
   getKey, setKey, keyScope, clearModelCache,
-  rankModel, orderModels, listModels,
+  rankModel, orderModels, listModels, defaultModel, replacementIn,
   getPreferred, setPreferred, verifyKey,
   buildBody, requestSize, answerText, generate, checkKey,
 } from '../app/assets/gemini.js';
+import { clearUsage, usage, isExhausted } from '../app/assets/quota.js';
 
 let failed = 0;
 let passed = 0;
@@ -85,7 +86,7 @@ const deps = (fetchImpl, sleep) => ({ fetchImpl, sleep });
 
 /* 모듈은 마지막에 성공한 모델을 기억한다(모델 교체 대비). 시험끼리 그 기억이
    새어 나가면 앞선 시험이 뒤 시험의 모델 차례를 바꿔 버리므로 매번 지우고 시작한다. */
-const reset = () => { clearModelCache(); setPreferred(''); };
+const reset = () => { clearModelCache(); setPreferred(''); clearUsage(); };
 
 // ──────────────────────────────────────────────────────────────
 // 1) 모델 거르기
@@ -141,13 +142,22 @@ const reset = () => { clearModelCache(); setPreferred(''); };
   ]);
   eq('2 정렬 결과',
     got.join(','),
-    ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash', 'gemini-2.0-flash-lite',
+    ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.0-flash-lite', 'gemini-2.0-flash',
       'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-2.5-pro'].join(','));
   check('2 flash가 pro보다 앞', got.indexOf('gemini-2.5-flash') < got.indexOf('gemini-1.5-pro'));
   check('2 버전 높은 쪽이 앞', got.indexOf('gemini-2.5-flash') < got.indexOf('gemini-2.0-flash'));
-  check('2 lite는 동버전 뒤', got.indexOf('gemini-2.5-flash') < got.indexOf('gemini-2.5-flash-lite'));
+  // 무료 등급에서 하루 몫이 몇 배 넉넉하므로 lite를 앞에 둔다
+  check('2 lite가 동버전 앞', got.indexOf('gemini-2.5-flash-lite') < got.indexOf('gemini-2.5-flash'));
   check('2 flash 아닌 것은 원래 차례대로', got.slice(-2).join(',') === 'gemini-1.5-pro,gemini-2.5-pro');
-  eq('2 rankModel 값', JSON.stringify(rankModel('gemini-2.5-flash-lite')), JSON.stringify([1, 205, -1]));
+  eq('2 rankModel 값', JSON.stringify(rankModel('gemini-2.5-flash-lite')), JSON.stringify([1, 205, 1]));
+  // 기본은 이름이 아니라 계열이다 — 목록에서 가장 높은 판의 flash-lite를 집는다
+  eq('2 기본 모델은 목록에서 고른다', defaultModel(got), 'gemini-2.5-flash-lite');
+  eq('2 판이 올라가면 그쪽을 집는다',
+    defaultModel(orderModels(['gemini-2.5-flash-lite', 'gemini-3.5-flash-lite', 'gemini-3.5-flash'])),
+    'gemini-3.5-flash-lite');
+  eq('2 lite가 없으면 빈 값', defaultModel(orderModels(['gemini-2.5-flash', 'gemini-2.5-pro'])), '');
+  check('2 기본 계열은 flash-lite', DEFAULT_FAMILY.test('gemini-9.9-flash-lite'));
+  check('2 내장 목록도 flash-lite가 맨 앞', /flash-lite/.test(FALLBACK_MODELS[0]), FALLBACK_MODELS[0]);
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -605,6 +615,124 @@ const reset = () => { clearModelCache(); setPreferred(''); };
   eq('14 키 없으면 실패', v6.ok, false);
   check('14 키 없음 사유', v6.error.includes('키가 없다'), v6.error);
   eq('14 키 없으면 호출 없음', n.calls.length, 0);
+}
+
+// ──────────────────────────────────────────────────────────────
+// 15) 무료 등급 하루 몫 — 다 쓰면 스스로 멈춘다
+// ──────────────────────────────────────────────────────────────
+{
+  const DAILY = 'You exceeded your current quota. '
+    + 'quota_metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, '
+    + 'quota_id: GenerateRequestsPerDayPerProjectPerModel-FreeTier, limit: 1000';
+
+  // 15-1 하루 몫 429는 쉬지 않고 다음 모델로 가며, 그 모델을 장부에 적는다
+  reset();
+  const f = fakeFetch((c) => {
+    if (!c.model) return modelsRes(['gemini-2.5-flash-lite', 'gemini-2.5-flash']);
+    return c.model === 'gemini-2.5-flash-lite' ? errRes(429, DAILY) : textRes('둘째가 답했다');
+  });
+  const s = fakeSleep();
+  const out = await generate({ prompt: 'x', key: KEY }, deps(f, s));
+  eq('15 하루 몫이 끝나면 다음 모델', out.model, 'gemini-2.5-flash');
+  eq('15 하루 몫에는 쉬지 않는다', s.waits.length, 0);
+  eq('15 소진 모델을 장부에 적는다', isExhausted('gemini-2.5-flash-lite'), true);
+  eq('15 성공한 모델은 안 적는다', isExhausted('gemini-2.5-flash'), false);
+  eq('15 성공 호출은 센다', usage().total, 1);
+
+  // 15-2 이미 소진된 모델은 다시 두들기지 않는다
+  const g = fakeFetch((c) => (c.model ? textRes('또 답했다') : modelsRes(['gemini-2.5-flash-lite', 'gemini-2.5-flash'])));
+  clearModelCache();
+  const out2 = await generate({ prompt: 'x', key: KEY }, deps(g, fakeSleep()));
+  eq('15 소진 모델은 건너뛴다', g.gen().length, 1);
+  eq('15 건너뛰고 다음 모델이 답한다', out2.model, 'gemini-2.5-flash');
+  eq('15 성공 두 번이면 2회', usage().total, 2);
+
+  // 15-3 모두 소진되면 그물을 타지 않고 그 자리에서 멈춘다
+  reset();
+  const h = fakeFetch((c) => (c.model ? errRes(429, DAILY) : modelsRes(['gemini-2.5-flash-lite', 'gemini-2.5-flash'])));
+  const e = await throws('15 전부 소진이면 던진다',
+    () => generate({ prompt: 'x', key: KEY }, deps(h, fakeSleep())));
+  eq('15 몫 소진 표시', e && e.quota, true);
+  eq('15 몫 소진은 fatal', e && e.fatal, true);
+  const spent = h.gen().length;
+  clearModelCache();
+  const h2 = fakeFetch((c) => (c.model ? errRes(429, DAILY) : modelsRes(['gemini-2.5-flash-lite', 'gemini-2.5-flash'])));
+  const e2 = await throws('15 다음 호출은 아예 나가지 않는다',
+    () => generate({ prompt: 'x', key: KEY }, deps(h2, fakeSleep())));
+  eq('15 생성 호출 0회', h2.gen().length, 0);
+  eq('15 그래도 몫 소진으로 알린다', e2 && e2.quota, true);
+  check('15 되돌아오는 시점을 사유에 적는다', /태평양 자정/.test(e2.message), e2.message);
+  check('15 앞 호출은 두 모델을 시도했다', spent === 2, `시도 ${spent}회`);
+
+  // 15-4 분당 몫(429)은 여기 걸리면 안 된다 — 쉬었다 다음 모델, 장부는 그대로
+  reset();
+  const m = fakeFetch((c) => {
+    if (!c.model) return modelsRes(['gemini-2.5-flash-lite', 'gemini-2.5-flash']);
+    return c.model === 'gemini-2.5-flash-lite'
+      ? errRes(429, 'Quota exceeded for quota metric ... PerMinute') : textRes('분당 한도 뒤 성공');
+  });
+  const s2 = fakeSleep();
+  await generate({ prompt: 'x', key: KEY }, deps(m, s2));
+  eq('15 분당 몫이면 쉰다', s2.waits.length, 1);
+  eq('15 분당 몫은 소진으로 안 적는다', isExhausted('gemini-2.5-flash-lite'), false);
+  reset();
+}
+
+// ──────────────────────────────────────────────────────────────
+// 16) 내려간 모델 — 구글이 알려 준 대체 이름으로 갈아탄다
+// ──────────────────────────────────────────────────────────────
+{
+  // 2026-09-08에 실제로 받은 문구 그대로
+  const RETIRED = 'This model models/gemini-2.5-flash-lite is no longer available to new users. '
+    + 'Please update your code to use models/gemini-3.5-flash-lite for the latest features '
+    + 'and improvements. We recommend you to use the Interactions API.';
+
+  eq('16 대체 이름을 집어낸다', replacementIn(RETIRED), 'gemini-3.5-flash-lite');
+  eq('16 없으면 빈 값', replacementIn('그냥 오류'), '');
+  eq('16 주소를 비트는 이름은 물리친다', replacementIn('use models/../evil?key=LEAK'), '');
+
+  // 16-1 목록에 없던 대체 이름이라도 그 자리에서 이어 붙여 시도한다
+  reset();
+  const f = fakeFetch((c) => {
+    if (!c.model) return modelsRes(['gemini-2.5-flash-lite']);
+    return c.model === 'gemini-3.5-flash-lite' ? textRes('새 판이 답했다') : errRes(400, RETIRED);
+  });
+  const out = await generate({ prompt: 'x', key: KEY }, deps(f, fakeSleep()));
+  eq('16 대체 모델이 답한다', out.model, 'gemini-3.5-flash-lite');
+  eq('16 대체 이름은 기억한다', getPreferred(), 'gemini-3.5-flash-lite');
+
+  // 16-2 고정해 둔 이름이 내려가면 기억에서 지운다
+  reset();
+  setPreferred('gemini-2.5-flash-lite');
+  const g = fakeFetch((c) => {
+    if (!c.model) return modelsRes(['gemini-2.5-flash']);
+    return c.model === 'gemini-2.5-flash-lite' ? errRes(400, RETIRED) : textRes('살아 있는 것이 답했다');
+  });
+  await generate({ prompt: 'x', key: KEY }, deps(g, fakeSleep()));
+  check('16 묵은 이름을 물고 있지 않는다', getPreferred() !== 'gemini-2.5-flash-lite', getPreferred());
+
+  // 16-3 verifyKey가 갈아탄 사실을 화면에 올려 준다
+  reset();
+  const h = fakeFetch((c) => {
+    if (!c.model) return modelsRes(['gemini-2.5-flash-lite']);
+    return c.model === 'gemini-3.5-flash-lite' ? textRes('OK') : errRes(400, RETIRED);
+  });
+  const v = await verifyKey({ key: KEY, model: 'gemini-2.5-flash-lite' }, deps(h, fakeSleep()));
+  eq('16 확인은 통과한다', v.ok, true);
+  eq('16 답한 모델은 새 판', v.model, 'gemini-3.5-flash-lite');
+  eq('16 갈아탄 사실을 알린다', v.switchedFrom, 'gemini-2.5-flash-lite');
+
+  // 16-4 대체 이름을 안 알려 주면 다음 모델로만 넘어간다(무한 되풀이 없음)
+  reset();
+  const i = fakeFetch((c) => {
+    if (!c.model) return modelsRes(['gemini-2.5-flash-lite', 'gemini-2.5-flash']);
+    return c.model === 'gemini-2.5-flash-lite'
+      ? errRes(400, 'This model is no longer available.') : textRes('다음 모델이 답했다');
+  });
+  const out4 = await generate({ prompt: 'x', key: KEY }, deps(i, fakeSleep()));
+  eq('16 대체 이름 없으면 다음 모델', out4.model, 'gemini-2.5-flash');
+  eq('16 시도는 두 번뿐', i.gen().length, 2);
+  reset();
 }
 
 console.log(`통과 ${passed} / 실패 ${failed}`);

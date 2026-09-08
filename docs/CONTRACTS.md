@@ -179,6 +179,35 @@ opts = { system: string, prompt: string,
 | 목록이 막혀도 진행 | `listModels` 실패는 치명적이지 않다. `FALLBACK_MODELS`로 계속하고 실패 사유를 최종 오류 메시지에 덧붙인다. 단 키 오류는 예외(즉시 중단) |
 | 확인은 실호출로 | `verifyKey`는 목록 조회 뒤 `PING` 프롬프트로 `generateContent`를 한 번 부른다. `model`을 주면 그 이름만 시험한다(폴백을 타지 않아 죽은 이름이 드러난다) |
 | 계정 단위 문제는 즉시 중단 | 크레딧 소진(`prepay`·`credits are depleted`·`out of credits`)은 모델을 바꿔도 똑같이 막히므로 `err.fatal = err.billing = true`로 곧바로 던진다. 모델별 일일 한도(`exceeded your current quota … plan and billing`)는 여기 걸리면 안 된다 — 낱말 'billing'이 아니라 크레딧 소진 문구만 집는다 |
+| 기본은 이름이 아니라 계열 | `DEFAULT_FAMILY = /flash-lite/`. `defaultModel(models)`가 살아 있는 목록에서 가장 높은 판을 집는다. 판 번호를 상수로 박지 않는다 |
+| 내려간 모델은 갈아탄다 | `no longer available`류 오류에서 `replacementIn(msg)`으로 구글이 지목한 이름을 뽑아 그 자리에서 후보 목록에 이어 붙이고, 기억해 둔 묵은 이름은 지운다. `err.retired`/`err.replacement`로 화면에 올린다 |
+| 하루 몫 | 429가 `per day`/`PerDay`/`free_tier_requests`면 `markExhausted(model, limit)`하고 쉬지 않고 다음 모델로. 분당 한도는 종전대로 2초 쉬고 넘어간다. 모두 소진이면 `err.quota = err.fatal = true` |
+| 이름 검사 | `^[A-Za-z0-9][A-Za-z0-9._-]*$` + `..` 금지. 모델 이름은 URL 경로에 그대로 들어가므로 상위 경로 탈출을 막는다 |
+
+## 6-2. `app/assets/quota.js` — 무료 몫 장부
+
+```js
+export const TZ = 'America/Los_Angeles'
+export const FREE_TIER, FREE_TIER_SOURCE      // 참고값 + 출처(단정 금지)
+export function ptDay(now): string            // 태평양 기준 날짜 = 장부 한 장
+export function nextResetAt(now): Date        // 다음 태평양 자정(서머타임 반영)
+export function untilReset(now): {ms,hours,minutes,at}
+export function resetText(now, locale, tz): string
+export function bump(model, now): number      // 성공한 호출 1회 기록
+export function markExhausted(model, limit, now): void
+export function isExhausted(model, now): boolean
+export function usable(models, now): string[]
+export function usage(now): {day,total,models,exhausted}
+export function limitOf(model, now): {rpd, source:'observed'|'reference'|'unknown'}
+export function setVerified(key, now) / isVerified(key, now) / clearVerified(now)
+export function fingerprint(key): string      // 키 원문을 저장하지 않기 위한 지문
+export function clearUsage(): void
+```
+
+- 장부는 `localStorage`의 `gemini_usage` 하나. 막혀 있으면 메모리로 물러난다
+- **한도 숫자로 막지 않는다.** `FREE_TIER`는 화면 표시용 참고값이고, 차단 판정은
+  구글이 돌려준 429로만 한다. 429 본문에 `limit: N`이 있으면 관측값으로 적어 두고 그 뒤로는 그것을 쓴다
+- 날짜가 바뀌면(태평양 자정) 계수·소진 표시·확인 기록이 모두 새 장으로 넘어간다
 
 화면(`app.js`)은 이 계약 위에 `need → busy → ok/fail/off` 상태 띠를 올린다.
 `K.verified`가 참일 때만 AI 단추가 열린다.

@@ -9,6 +9,7 @@ import { extractAttachment, SUPPORTED } from './attach.js';
 import { loadIndex, groupCodes, analyze, narrate, KEY_CODES } from './indicator.js';
 import { renderComparisonChart } from './chart.js';
 import * as gem from './gemini.js';
+import * as quota from './quota.js';
 import { readBodyText } from './docread.js';
 import { injectRawBlocks, token as layoutToken, usedKeys } from './rawblock.js';
 
@@ -69,16 +70,33 @@ async function boot() {
   } catch (e) {
     say('#r-status', '지표 데이터를 불러오지 못했다 — ' + e.message, 'err');
   }
-  // 저장해 둔 키가 있으면 들어오자마자 다시 확인한다. 어제 되던 모델이 오늘 없어졌으면
-  // 여기서 드러나고, 살아 있는 목록으로 우선 모델이 갱신된다.
-  if (gem.getKey()) {
-    $('#k-in').value = gem.getKey();
-    const local = gem.keyScope() === 'local';
-    $$('input[name=k-store]').forEach((r) => { r.checked = (r.value === 'local') === local; });
-    verify();
-  } else {
+  // 저장해 둔 키가 있으면 다시 확인한다. 어제 되던 모델이 오늘 없어졌으면 여기서 드러난다.
+  // 다만 **오늘 이미 확인한 키면 실호출을 건너뛴다** — 무료 등급에서는 페이지를 열 때마다
+  // 하루 몫을 한 칸씩 쓰는 것이 아깝다. [다시 확인]을 누르면 그때는 진짜로 부른다.
+  const key = gem.getKey();
+  if (!key) {
     setState('need');
     syncKey();
+    return;
+  }
+  $('#k-in').value = key;
+  const local = gem.keyScope() === 'local';
+  $$('input[name=k-store]').forEach((r) => { r.checked = (r.value === 'local') === local; });
+  if (quota.isVerified(key)) {
+    K.verified = true;
+    K.models = [];
+    fillModels([], null);
+    setState('ok');
+    $('#k-oklbl').textContent = gem.keyScope() === 'local'
+      ? 'API 키 확인됨 · 이 브라우저에 저장' : 'API 키 확인됨 · 이 탭에서만';
+    $('#k-okwhy').textContent = [
+      '오늘 이미 확인한 키라 실호출을 건너뛰었다(무료 몫 아낌)',
+      gem.getPreferred() ? `우선 모델 ${gem.getPreferred()}` : '',
+      usageText(),
+    ].filter(Boolean).join(' · ');
+    syncKey();
+  } else {
+    verify();
   }
 }
 
@@ -340,7 +358,8 @@ $('#w-gen').onclick = async () => {
     });
     $('#w-draft').value = stripFence(text);
     $('#w-make').disabled = false;
-    say('#w-status', `초안 작성 완료 · 모델 ${model}`, 'ok');
+    say('#w-status', `초안 작성 완료 · 모델 ${model} · ${usageText()}`, 'ok');
+    if (K.state === 'ok') $('#k-okwhy').textContent = `응답 모델 ${model} · ${usageText()}`;
     runLint();
   } catch (e) {
     say('#w-status', '호출 실패 — ' + e.message + failTail(e), 'err');
@@ -350,10 +369,22 @@ $('#w-gen').onclick = async () => {
 
 const stripFence = (t) => String(t).replace(/^```[a-z]*\n?/i, '').replace(/```\s*$/, '').trim();
 
-/* 호출 실패에 덧붙이는 한 줄. 계정 단위 문제는 다시 눌러도 안 풀리니 그렇게 적는다. */
-const failTail = (e) => (e && e.billing
-  ? ' — 구글 계정의 선불 크레딧이 바닥났다. AI Studio(ai.studio/projects)에서 결제를 처리해야 한다'
-  : e && e.fatal ? ' — API 키가 거부됐다. 맨 위 띠에서 키를 다시 확인할 것' : '');
+/* 호출 실패에 덧붙이는 한 줄. 계정 단위 문제는 다시 눌러도 안 풀리니 그렇게 적는다.
+   오늘 몫이 끝난 것이면 화면 전체를 그 상태로 바꿔 작업이 스스로 멈추게 한다. */
+function failTail(e) {
+  if (e && e.quota) {
+    markSpent('오늘 쓸 수 있는 무료 몫을 다 썼다.');
+    return ` — 오늘 몫이 끝났다. ${quota.resetText()}에 되돌아온다`;
+  }
+  if (e && e.billing) {
+    return ' — 구글 계정의 선불 크레딧이 바닥났다. AI Studio(ai.studio/projects)에서 결제를 처리해야 한다';
+  }
+  if (e && e.retired) {
+    return ` — ${e.retired}는 내려간 모델이다`
+      + (e.replacement ? `. 구글이 ${e.replacement}를 대신 쓰라고 알려 왔다` : '');
+  }
+  return e && e.fatal ? ' — API 키가 거부됐다. 맨 위 띠에서 키를 다시 확인할 것' : '';
+}
 
 /* 표 칸 하나를 파이프 표에 넣을 수 있는 한 줄로 눕힌다.
    안내서 머리행에는 줄바꿈이 흔하다("성과지표 명\n(단위)"). 그대로 쓰면 파이프 표
@@ -759,7 +790,7 @@ $('#c-make').onclick = async () => {
    확인은 모델 목록 조회로 끝내지 않는다. 목록이 통해도 생성만 막힌 키가 있고,
    무엇보다 구글이 모델 이름을 갈아 치우면 목록만으로는 그 사실이 드러나지 않는다.
    그래서 실제 generateContent를 한 번 때려 보고, 답한 모델 이름을 화면에 박아 둔다. */
-const K = { models: [], verified: false, state: '' };
+const K = { models: [], verified: false, state: '', spent: false };
 
 const storeMode = () => ($$('input[name=k-store]').find((r) => r.checked) || {}).value === 'local';
 
@@ -771,12 +802,37 @@ function setState(s) {
   if (s !== 'fail') $('#k-fix').hidden = true;
 }
 
-/** AI를 쓰는 단추는 확인이 끝난 뒤에만 열린다. */
+/** AI를 쓰는 단추는 확인이 끝나고 오늘 몫이 남아 있을 때만 열린다. */
 function syncKey() {
-  const on = K.verified && !!gem.getKey();
+  const on = K.verified && !!gem.getKey() && !K.spent;
   $('#w-gen').disabled = !on;
   $('#r-polish').disabled = !on;
   $('#c-fix').disabled = !on || !S.cDoc;
+}
+
+/* 오늘 쓴 몫과 되돌아오는 시각. 무료 등급은 이 두 가지가 곧 작업 가능 여부다. */
+function usageText() {
+  const u = quota.usage();
+  const left = quota.untilReset();
+  const when = quota.resetText();
+  const bits = [`오늘 ${u.total}회`];
+  const lim = quota.limitOf(gem.getPreferred() || '');
+  if (lim.rpd) bits.push(lim.source === 'observed' ? `한도 ${lim.rpd}회(관측값)` : `한도 ${lim.rpd}회(참고값)`);
+  bits.push(`몫 되돌아옴 ${when} (${left.hours}시간 ${left.minutes}분 뒤)`);
+  return bits.join(' · ');
+}
+
+/* 오늘 몫이 끝났을 때 — 작업을 붙잡지 말고 그 자리에서 멈추고 사실을 적는다. */
+function markSpent(msg) {
+  K.spent = true;
+  setState('fail');
+  say('#k-test', msg || '오늘 쓸 수 있는 무료 몫을 다 썼다.', 'err');
+  const box = $('#k-fix');
+  box.innerHTML = `무료 등급의 하루 몫은 <b>태평양 자정</b>에 되돌아온다 — `
+    + `<b>${esc(quota.resetText())}</b>(약 ${quota.untilReset().hours}시간 뒤)까지 AI 기능은 잠긴다. `
+    + `그동안 <b>지역여건 분석</b>·<b>양식 점검</b>·[양식만 넣기]는 그대로 쓸 수 있다.`;
+  box.hidden = false;
+  syncKey();
 }
 
 /* 우선 모델 선택 상자를 살아 있는 목록으로 다시 채운다.
@@ -807,14 +863,24 @@ async function verify() {
   fillModels(K.models, pick);
 
   if (res.ok) {
+    K.spent = false;
     setState('ok');
+    // 고정해 둔 이름이 내려갔으면 실제로 답한 모델로 갈아 끼운다(막다른 길로 두지 않는다)
+    if (res.switchedFrom) {
+      gem.setPreferred(res.model);
+      fillModels(K.models, res.model);
+    }
     $('#k-oklbl').textContent = gem.keyScope() === 'local'
       ? 'API 키 확인됨 · 이 브라우저에 저장' : 'API 키 확인됨 · 이 탭에서만';
     const bits = [`응답 모델 ${res.model}`];
+    if (res.switchedFrom) bits.push(`${res.switchedFrom}은 내려가 자동으로 바꿨다`);
     bits.push(res.listed ? `쓸 수 있는 모델 ${K.models.length}개` : '모델 목록은 못 받았다(내장 이름으로 연결)');
+    bits.push(usageText());
     if (gem.storageBlocked()) bits.push('저장소가 막혀 메모리에만 둔다 — 새로 고치면 지워진다');
     $('#k-okwhy').textContent = bits.join(' · ');
     say('#k-test', '', '');
+  } else if (res.quota) {
+    markSpent('확인 실패 — ' + res.error);
   } else {
     setState('fail');
     // 특정 모델을 고정해 둔 채 막힌 것이면 되돌릴 길을 같은 줄에 내민다(선택 상자는 ok 줄에 있다)
@@ -835,6 +901,14 @@ function showFix(res, pick) {
       + '<a href="https://ai.studio/projects" target="_blank" rel="noopener noreferrer">AI Studio</a>에서 '
       + '결제·크레딧을 처리한 뒤 다시 확인한다. 그동안 <b>지역여건 분석</b>·<b>양식 점검</b>은 '
       + '[키 없이 쓰기]로 그대로 쓸 수 있다.';
+  } else if (res.retired) {
+    // 구글이 대체 이름을 알려 준 경우 — 그대로 눌러 바꿀 수 있게 한다
+    html = `<b>${esc(res.retired)}</b>는 내려간 모델이다`
+      + (res.replacement
+        ? ` — 구글이 <b>${esc(res.replacement)}</b>를 대신 쓰라고 알려 왔다. `
+          + '[자동 모델로 되돌려 다시 확인]을 누르면 살아 있는 목록에서 다시 고른다.'
+        : '. [자동 모델로 되돌려 다시 확인]을 눌러 살아 있는 목록에서 다시 고른다.');
+    $('#k-auto').hidden = false;
   } else if (res.fatal) {
     html = '키 자체가 거부됐다. 붙여넣기가 온전한지 보고, 아니면 '
       + '<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer">AI Studio</a>에서 '
@@ -881,8 +955,9 @@ $('#k-auto').onclick = () => {
 $('#k-del').onclick = () => {
   gem.setKey('', false);
   gem.setPreferred('');
+  quota.clearVerified();
   $('#k-in').value = '';
-  K.verified = false; K.models = [];
+  K.verified = false; K.models = []; K.spent = false;
   setState('need');
   say('#k-test', '키를 지웠다', '');
   syncKey();
