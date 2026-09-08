@@ -410,6 +410,113 @@ if (made.length) {
   ok(false, '되돌릴 산출물이 없다');
 }
 
+/* ───────── API 키 설정 띠 ─────────
+   구글 창구를 가로채 가짜로 답한다(진짜 키가 없어도 절차 전체를 돌려 볼 수 있고,
+   무엇보다 "모델 이름이 갈렸다"·"목록 창구가 죽었다" 같은 상황을 실제로 만들어 볼 수 있다). */
+head('API 키 — 실호출 확인 절차와 모델 교체 대비');
+{
+  consoleErrs.length = 0;
+  const FAKE = 'AIzaSyTEST-0123456789';
+  const CORS = { 'Access-Control-Allow-Origin': '*' };
+  const listOK = (names) => ({ status: 200, body: { models: names.map((n) => ({
+    name: `models/${n}`, supportedGenerationMethods: ['generateContent'] })) } });
+  const genOK = (t) => ({ status: 200, body: { candidates: [{ content: { parts: [{ text: t }] } }] } });
+  const errJ = (status, message) => ({ status, body: { error: { message, code: status } } });
+
+  // 상황판 — 시험 도중 갈아 끼운다
+  const mock = { list: () => listOK(['gemini-2.5-flash', 'gemini-2.5-pro']), gen: () => genOK('OK') };
+  const urls = [];        // 나간 주소(키가 새는지 본다)
+  const keyHdr = new Set();
+
+  await ctx.route(/generativelanguage\.googleapis\.com/, async (route) => {
+    const req = route.request();
+    if (req.method() === 'OPTIONS') {          // 사전 요청(커스텀 헤더 때문에 뜬다)
+      return route.fulfill({ status: 204, headers: { ...CORS,
+        'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+        'Access-Control-Allow-Headers': 'content-type,x-goog-api-key' } });
+    }
+    urls.push(req.url());
+    keyHdr.add(req.headers()['x-goog-api-key'] || '(없음)');
+    const model = (req.url().match(/\/models\/([^:]+):generateContent/) || [])[1] || '';
+    const r = model ? mock.gen(model) : mock.list();
+    return route.fulfill({ status: r.status, contentType: 'application/json',
+      headers: CORS, body: JSON.stringify(r.body) });
+  });
+
+  const state = () => page.getAttribute('#setup', 'data-state');
+  const waitState = (s, ms = 30000) => page.waitForFunction(
+    (want) => document.querySelector('#setup').dataset.state === want, s, { timeout: ms });
+
+  ok(await state() === 'need', '처음엔 키 입력 칸이 열려 있다', await state());
+  ok(await page.locator('#setup').isVisible(), '설정 띠가 화면 맨 위에 보인다');
+  ok(await page.isDisabled('#w-gen'), '확인 전에는 [AI로 초안 작성]이 잠겨 있다');
+
+  // 1) 키를 넣고 확인 — 목록 조회 + 실제 생성 1회
+  await page.fill('#k-in', FAKE);
+  await page.click('#k-go');
+  await waitState('ok');
+  ok(true, '키 확인 통과 → 설정 띠가 한 줄로 접힌다');
+  const why1 = await page.textContent('#k-okwhy');
+  ok(why1.includes('gemini-2.5-flash'), '답한 모델 이름을 화면에 박아 둔다', why1);
+  ok(!await page.isDisabled('#w-gen'), '확인 뒤 [AI로 초안 작성]이 열린다');
+  ok(urls.some((u) => /\/models\?/.test(u)), '모델 목록을 조회했다');
+  ok(urls.some((u) => /:generateContent$/.test(u)), '실제 생성까지 한 번 불렀다(목록 조회로 끝내지 않는다)');
+  ok(urls.every((u) => !u.includes(FAKE) && !/[?&]key=/.test(u)), '키가 주소에 실리지 않는다',
+    urls.join(' | '));
+  ok(keyHdr.size === 1 && keyHdr.has(FAKE), '키는 x-goog-api-key 헤더로만 나간다',
+    [...keyHdr].join(', '));
+  const nOpt = await page.locator('#k-model option').count();
+  ok(nOpt >= 3, '우선 모델 상자가 살아 있는 목록으로 채워진다', `${nOpt}개`);
+  ok(await page.inputValue('#k-model') === '', '기본값은 자동(고정하면 폴백을 못 탄다)');
+
+  // 2) 모델 교체 — 어제 이름이 사라지고 새 이름만 남은 상황
+  mock.list = () => listOK(['gemini-9.9-flash']);
+  mock.gen = (m) => (m === 'gemini-9.9-flash' ? genOK('OK') : errJ(404, `models/${m} is not found`));
+  await page.click('#k-recheck');
+  await waitState('ok');
+  const why2 = await page.textContent('#k-okwhy');
+  ok(why2.includes('gemini-9.9-flash'), '이름이 갈려도 새 모델로 연결된다', why2);
+  ok(!await page.isDisabled('#w-gen'), '모델 교체 뒤에도 AI 기능이 열려 있다');
+
+  // 3) 목록 창구가 죽은 상황 — 내장 이름으로 밀어붙인다
+  //    (직전에 기억한 gemini-9.9-flash를 먼저 두들겨 보고 404면 버리는 길까지 함께 지난다)
+  mock.list = () => errJ(500, '목록 창구가 죽었다');
+  mock.gen = (m) => (m === 'gemini-2.5-flash' ? genOK('OK') : errJ(404, `models/${m} is not found`));
+  await page.click('#k-recheck');
+  await waitState('ok');
+  const why3 = await page.textContent('#k-okwhy');
+  ok(why3.includes('gemini-2.5-flash'), '목록이 막혀도 내장 이름으로 연결된다', why3);
+  ok(why3.includes('모델 목록은 못 받았다'), '목록을 못 받았다는 사실을 감추지 않는다', why3);
+
+  // 4) 키가 거부되는 상황
+  mock.list = () => errJ(400, 'API key not valid. Please pass a valid API key.');
+  mock.gen = () => errJ(400, 'API key not valid. Please pass a valid API key.');
+  await page.click('#k-recheck');
+  await waitState('fail');
+  const msg = await page.textContent('#k-test');
+  ok(msg.includes('확인 실패'), '거부된 키는 실패로 알린다', msg);
+  ok(msg.includes('API key not valid'), '구글이 준 사유를 그대로 보여 준다', msg);
+  ok(await page.isDisabled('#w-gen'), '확인이 깨지면 AI 기능이 다시 잠긴다');
+
+  // 5) 막다른 길을 만들지 않는다 — 확인을 건너뛰고 쓰겠다는 길
+  await page.click('#k-force');
+  await waitState('ok');
+  ok(!await page.isDisabled('#w-gen'), '확인을 건너뛰면 쓸 수는 있다');
+  ok((await page.textContent('#k-oklbl')).includes('건너뛰'), '건너뛴 상태임을 밝힌다');
+
+  // 6) 키 삭제
+  await page.click('#k-del');
+  await waitState('need');
+  ok(await page.isDisabled('#w-gen'), '키를 지우면 AI 기능이 잠긴다');
+  ok(await page.inputValue('#k-in') === '', '지우면 입력 칸도 빈다');
+
+  // 404·500을 일부러 만들어 냈으니 그 자원 적재 실패는 오류로 치지 않는다.
+  // 우리 코드가 삼키지 못하고 튄 예외만 본다.
+  const real = consoleErrs.filter((m) => !/Failed to load resource/.test(m));
+  ok(real.length === 0, 'API 키 절차에서 튄 예외 없음', real.join(' | '));
+  await ctx.unroute(/generativelanguage\.googleapis\.com/);
+}
+
 await browser.close();
 srv.close();
 

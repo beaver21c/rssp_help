@@ -9,9 +9,10 @@
 "use strict";
 
 import {
-  BASE, RETRY_MS, FALLBACK_MODELS,
+  BASE, RETRY_MS, FALLBACK_MODELS, PING,
   getKey, setKey, keyScope, clearModelCache,
   rankModel, orderModels, listModels,
+  getPreferred, setPreferred, verifyKey,
   buildBody, requestSize, answerText, generate, checkKey,
 } from '../app/assets/gemini.js';
 
@@ -82,11 +83,15 @@ function fakeSleep() {
 
 const deps = (fetchImpl, sleep) => ({ fetchImpl, sleep });
 
+/* 모듈은 마지막에 성공한 모델을 기억한다(모델 교체 대비). 시험끼리 그 기억이
+   새어 나가면 앞선 시험이 뒤 시험의 모델 차례를 바꿔 버리므로 매번 지우고 시작한다. */
+const reset = () => { clearModelCache(); setPreferred(''); };
+
 // ──────────────────────────────────────────────────────────────
 // 1) 모델 거르기
 // ──────────────────────────────────────────────────────────────
 {
-  clearModelCache();
+  reset();
   const raw = [
     'gemini-2.0-flash-exp', 'gemini-2.5-flash-preview-05-20', 'gemini-2.5-flash-tts',
     'imagen-3.0-generate', 'gemini-embedding-001', 'gemini-live-2.5-flash',
@@ -106,12 +111,12 @@ const deps = (fetchImpl, sleep) => ({ fetchImpl, sleep });
   // 캐시: 같은 키로 또 부르면 그물을 다시 안 탄다
   await listModels(KEY, deps(f));
   eq('1 같은 키는 캐시를 쓴다', f.calls.length, 1);
-  clearModelCache();
+  reset();
   await listModels(KEY, deps(f));
   eq('1 캐시를 버리면 다시 부른다', f.calls.length, 2);
 
   // generateContent를 지원 안 하는 모델은 뺀다
-  clearModelCache();
+  reset();
   const g = fakeFetch(() => okRes({
     models: [
       { name: 'models/gemini-2.5-flash', supportedGenerationMethods: ['generateContent'] },
@@ -121,7 +126,7 @@ const deps = (fetchImpl, sleep) => ({ fetchImpl, sleep });
   eq('1 generateContent 미지원 제외', (await listModels(KEY, deps(g))).join(','), 'gemini-2.5-flash');
 
   // 하나도 안 남으면 기본 목록으로 버틴다
-  clearModelCache();
+  reset();
   const h = fakeFetch(() => modelsRes(['gemini-2.0-flash-exp']));
   eq('1 빈 목록이면 기본값', (await listModels(KEY, deps(h))).join(','), FALLBACK_MODELS.join(','));
 }
@@ -149,7 +154,7 @@ const deps = (fetchImpl, sleep) => ({ fetchImpl, sleep });
 // 3) 429 — 쉬었다가 다음 모델
 // ──────────────────────────────────────────────────────────────
 {
-  clearModelCache();
+  reset();
   const f = fakeFetch((c) => {
     if (!c.model) return modelsRes(['gemini-2.5-flash', 'gemini-2.0-flash']);
     if (c.model === 'gemini-2.5-flash') return errRes(429, 'Resource has been exhausted');
@@ -169,7 +174,7 @@ const deps = (fetchImpl, sleep) => ({ fetchImpl, sleep });
 // 4) 404 — 기다리지 않고 바로 다음 모델
 // ──────────────────────────────────────────────────────────────
 {
-  clearModelCache();
+  reset();
   const f = fakeFetch((c) => {
     if (!c.model) return modelsRes(['gemini-2.5-flash', 'gemini-2.0-flash']);
     if (c.model === 'gemini-2.5-flash') return errRes(404, 'models/gemini-2.5-flash is not found');
@@ -186,7 +191,7 @@ const deps = (fetchImpl, sleep) => ({ fetchImpl, sleep });
 // 5) 키 오류 — 즉시 중단, err.fatal
 // ──────────────────────────────────────────────────────────────
 {
-  clearModelCache();
+  reset();
   const f = fakeFetch((c) => {
     if (!c.model) return modelsRes(['gemini-2.5-flash', 'gemini-2.0-flash']);
     return errRes(400, 'API key not valid. Please pass a valid API key.');
@@ -200,7 +205,7 @@ const deps = (fetchImpl, sleep) => ({ fetchImpl, sleep });
   eq('5 다음 모델로 안 넘어간다', f.gen().length, 1);
 
   // permission·expired 문구도 같은 취급
-  clearModelCache();
+  reset();
   const g = fakeFetch((c) => (c.model
     ? errRes(403, 'Permission denied on resource')
     : modelsRes(['gemini-2.5-flash', 'gemini-2.0-flash'])));
@@ -213,7 +218,7 @@ const deps = (fetchImpl, sleep) => ({ fetchImpl, sleep });
 // 6) 키는 헤더로만 — URL에 절대 안 들어간다
 // ──────────────────────────────────────────────────────────────
 {
-  clearModelCache();
+  reset();
   const f = fakeFetch((c) => (c.model ? textRes('좋아') : modelsRes(['gemini-2.5-flash'])));
   await generate({ prompt: '헤더 확인', system: '너는 도우미다', key: KEY }, deps(f, fakeSleep()));
   eq('6 부른 횟수', f.calls.length, 2);
@@ -235,7 +240,7 @@ const deps = (fetchImpl, sleep) => ({ fetchImpl, sleep });
 // 7) 첨부 — inline_data 파트, 텍스트가 먼저
 // ──────────────────────────────────────────────────────────────
 {
-  clearModelCache();
+  reset();
   const f = fakeFetch((c) => (c.model ? textRes('읽었다') : modelsRes(['gemini-2.5-flash'])));
   const files = [
     { mimeType: 'application/pdf', data: 'JVBERi0xLjQK' },
@@ -268,7 +273,7 @@ const deps = (fetchImpl, sleep) => ({ fetchImpl, sleep });
 // 8) 전부 실패하면 마지막 오류를 던진다
 // ──────────────────────────────────────────────────────────────
 {
-  clearModelCache();
+  reset();
   const f = fakeFetch((c) => {
     if (!c.model) return modelsRes(['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro']);
     if (c.model === 'gemini-1.5-pro') return errRes(500, '마지막 모델까지 터졌다');
@@ -282,7 +287,7 @@ const deps = (fetchImpl, sleep) => ({ fetchImpl, sleep });
   eq('8 마지막이 pro', f.gen()[2].model, 'gemini-1.5-pro');
 
   // 그물이 끊긴 경우(fetch 자체가 튐)도 다음 모델로 넘어간다
-  clearModelCache();
+  reset();
   let n = 0;
   const g = fakeFetch((c) => {
     if (!c.model) return modelsRes(['gemini-2.5-flash', 'gemini-2.0-flash']);
@@ -298,7 +303,7 @@ const deps = (fetchImpl, sleep) => ({ fetchImpl, sleep });
 // 9) 스키마 400 → 스키마 빼고 같은 모델 재시도
 // ──────────────────────────────────────────────────────────────
 {
-  clearModelCache();
+  reset();
   const f = fakeFetch((c) => {
     if (!c.model) return modelsRes(['gemini-2.5-flash']);
     if (c.body.generationConfig.responseSchema) return errRes(400, 'responseSchema is not supported');
@@ -357,12 +362,12 @@ const deps = (fetchImpl, sleep) => ({ fetchImpl, sleep });
     answerText({ candidates: [{ content: { parts: [{ text: '앞' }, { text: '뒤' }] } }] }), '앞뒤');
   eq('11 후보가 없으면 빈 문자열', answerText({}), '');
 
-  clearModelCache();
+  reset();
   const f = fakeFetch(() => modelsRes(['gemini-2.5-flash', 'gemini-2.5-pro']));
   const good = await checkKey(KEY, deps(f));
   eq('11 확인 성공', good.ok, true);
   eq('11 우선 모델', good.model, 'gemini-2.5-flash');
-  clearModelCache();
+  reset();
   const g = fakeFetch(() => errRes(400, 'API key not valid.'));
   const bad = await checkKey(KEY, deps(g));
   eq('11 확인 실패', bad.ok, false);
@@ -374,7 +379,7 @@ const deps = (fetchImpl, sleep) => ({ fetchImpl, sleep });
 // ──────────────────────────────────────────────────────────────
 {
   // 12-1 200인데 본문이 JSON이 아니면(프록시 안내 쪽·잘린 응답) 폴백이 끊기면 안 된다
-  clearModelCache();
+  reset();
   const f = fakeFetch((c) => (c.model
     ? { ok: true, status: 200, json: async () => { throw new SyntaxError('Unexpected token <'); } }
     : modelsRes(['gemini-2.5-flash', 'gemini-2.0-flash'])));
@@ -385,7 +390,7 @@ const deps = (fetchImpl, sleep) => ({ fetchImpl, sleep });
   check('12 오류에 모델 이름이 담긴다', e && e.message.startsWith('gemini-2.0-flash'), e && e.message);
 
   // 12-2 200인데 알맹이가 없으면 성공으로 치지 않는다(빈 원고를 "완료"로 넘기던 자리)
-  clearModelCache();
+  reset();
   const g = fakeFetch((c) => (c.model
     ? okRes({ promptFeedback: { blockReason: 'SAFETY' } })
     : modelsRes(['gemini-2.5-flash', 'gemini-2.0-flash'])));
@@ -396,7 +401,7 @@ const deps = (fetchImpl, sleep) => ({ fetchImpl, sleep });
   eq('12 빈 응답이면 다음 모델도 본다', g.gen().length, 2);
 
   // 12-3 마지막 모델이 429면 헛기다림을 하지 않는다
-  clearModelCache();
+  reset();
   const h = fakeFetch((c) => (c.model ? errRes(429, 'Resource exhausted')
     : modelsRes(['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'])));
   const s = fakeSleep();
@@ -404,7 +409,7 @@ const deps = (fetchImpl, sleep) => ({ fetchImpl, sleep });
   eq('12 모델 셋 중 대기는 둘', s.waits.length, 2);
 
   // 12-4 주소를 비틀 수 있는 모델 이름은 목록에서 물리친다(키가 쿼리스트링으로 새는 길)
-  clearModelCache();
+  reset();
   const bad = fakeFetch(() => okRes({
     models: [{ name: 'models/gemini 2.5/../evil?key=LEAK', supportedGenerationMethods: ['generateContent'] }],
   }));
@@ -418,7 +423,7 @@ const deps = (fetchImpl, sleep) => ({ fetchImpl, sleep });
     (x) => x.message.includes('못 쓰는 글자'));
 
   // 12-5 같은 키로 동시에 물으면 그물은 한 번만 탄다
-  clearModelCache();
+  reset();
   const c1 = fakeFetch(() => modelsRes(['gemini-2.5-flash']));
   const three = await Promise.all([
     listModels(KEY, deps(c1)), listModels(KEY, deps(c1)), listModels(KEY, deps(c1)),
@@ -426,7 +431,7 @@ const deps = (fetchImpl, sleep) => ({ fetchImpl, sleep });
   eq('12 동시 세 번이어도 목록 호출은 한 번', c1.calls.length, 1);
   eq('12 셋 다 같은 답', three.every((m) => m.join(',') === 'gemini-2.5-flash'), true);
   // 실패하면 캐시에 남지 않아 다음 호출이 다시 시도한다
-  clearModelCache();
+  reset();
   const c2 = fakeFetch(() => errRes(500, '잠깐 죽었다'));
   await throws('12 목록 실패', () => listModels(KEY, deps(c2)));
   await throws('12 실패 뒤 재시도', () => listModels(KEY, deps(c2)));
@@ -436,11 +441,135 @@ const deps = (fetchImpl, sleep) => ({ fetchImpl, sleep });
   await throws('12 files가 배열이 아니면 한국어 오류',
     async () => buildBody({ prompt: 'p', files: { mimeType: 'a', data: 'b' } }),
     (x) => !(x instanceof TypeError) && x.message.includes('배열'));
-  clearModelCache();
+  reset();
   const w = fakeFetch(() => okRes({ models: '배열이 아니다' }));
   eq('12 목록이 배열이 아니면 기본값',
     (await listModels(KEY, deps(w))).join(','), FALLBACK_MODELS.join(','));
   eq('12 temperature 0도 지켜진다', buildBody({ prompt: 'p', temperature: 0 }).generationConfig.temperature, 0);
+}
+
+// ──────────────────────────────────────────────────────────────
+// 13) 모델이 바뀌어도 죽지 않는가 — 이 도구의 가장 큰 외부 위험
+// ──────────────────────────────────────────────────────────────
+{
+  // 13-1 마지막에 성공한 모델을 기억했다가 다음번에 맨 앞에 세운다
+  reset();
+  const f = fakeFetch((c) => (c.model ? textRes('첫 답') : modelsRes(['gemini-2.5-flash', 'gemini-2.0-flash'])));
+  await generate({ prompt: 'x', key: KEY }, deps(f, fakeSleep()));
+  eq('13 성공한 모델을 기억한다', getPreferred(), 'gemini-2.5-flash');
+
+  reset();
+  const g = fakeFetch((c) => (c.model ? textRes('또 답') : modelsRes(['gemini-2.0-flash', 'gemini-2.5-flash'])));
+  const out = await generate({ prompt: 'x', key: KEY }, deps(g, fakeSleep()));
+  eq('13 기억한 모델이 목록 차례를 제친다', g.gen()[0].model, 'gemini-2.5-flash');
+  eq('13 그 모델이 답한다', out.model, 'gemini-2.5-flash');
+
+  // 13-2 기억한 이름이 없어지면(404) 곧바로 버리고 다음 모델로 간다
+  const OLD = 'gemini-1.0-flash-legacy';
+  reset(); setPreferred(OLD);
+  const h = fakeFetch((c) => {
+    if (!c.model) return modelsRes(['gemini-3.0-flash']);
+    if (c.model === OLD) return errRes(404, `models/${OLD} is not found`);
+    return textRes('새 이름이 답했다');
+  });
+  const out2 = await generate({ prompt: 'x', key: KEY }, deps(h, fakeSleep()));
+  eq('13 없어진 이름은 건너뛴다', out2.model, 'gemini-3.0-flash');
+  eq('13 없어진 이름은 기억에서 지운다', getPreferred(), 'gemini-3.0-flash');
+  eq('13 묵은 이름을 먼저 한 번은 시도한다', h.gen()[0].model, OLD);
+
+  // 13-3 목록 창구가 통째로 막혀도 내장 이름으로 밀어붙인다
+  reset();
+  const i = fakeFetch((c) => (c.model
+    ? (c.model === FALLBACK_MODELS[0] ? textRes('내장 이름으로 연결') : errRes(404, 'nope'))
+    : errRes(500, '목록 창구가 죽었다')));
+  const out3 = await generate({ prompt: 'x', key: KEY }, deps(i, fakeSleep()));
+  eq('13 목록 실패해도 생성은 된다', out3.model, FALLBACK_MODELS[0]);
+  eq('13 목록 실패해도 내장 목록을 쓴다', out3.text, '내장 이름으로 연결');
+
+  // 13-4 목록도 못 받고 생성도 다 막히면 두 사유를 함께 알린다
+  reset();
+  const j = fakeFetch((c) => (c.model ? errRes(404, '그런 모델 없다') : errRes(500, '목록 창구가 죽었다')));
+  const e = await throws('13 둘 다 막히면 던진다', () => generate({ prompt: 'x', key: KEY }, deps(j, fakeSleep())));
+  check('13 생성 실패 사유가 담긴다', e && e.message.includes('그런 모델 없다'), e && e.message);
+  check('13 목록 실패 사유도 함께 담긴다', e && e.message.includes('목록도 받지 못했다'), e && e.message);
+
+  // 13-5 목록 조회 단계의 키 오류는 즉시 중단(내장 이름으로 두들겨 봐야 똑같이 막힌다)
+  reset();
+  const k = fakeFetch(() => errRes(400, 'API key not valid. Please pass a valid API key.'));
+  const e2 = await throws('13 목록 단계 키 오류는 즉시 중단',
+    () => generate({ prompt: 'x', key: KEY }, deps(k, fakeSleep())));
+  eq('13 그 오류도 fatal', e2 && e2.fatal, true);
+  eq('13 생성은 시도조차 안 한다', k.gen().length, 0);
+
+  // 13-6 못 쓰는 이름은 기억하지 않는다(주소를 비트는 값 차단)
+  setPreferred('a/b?key=LEAK');
+  eq('13 못 쓰는 이름은 기억에서 물리친다', getPreferred(), '');
+  setPreferred('models/gemini-2.5-flash');
+  eq('13 models/ 접두어는 벗겨서 기억한다', getPreferred(), 'gemini-2.5-flash');
+  setPreferred('');
+}
+
+// ──────────────────────────────────────────────────────────────
+// 14) verifyKey — 목록만 보지 않고 실제 생성까지 해 본다
+// ──────────────────────────────────────────────────────────────
+{
+  // 14-1 정상
+  reset();
+  const f = fakeFetch((c) => (c.model ? textRes('OK') : modelsRes(['gemini-2.5-flash', 'gemini-2.5-pro'])));
+  const v = await verifyKey({ key: KEY }, deps(f, fakeSleep()));
+  eq('14 확인 성공', v.ok, true);
+  eq('14 답한 모델', v.model, 'gemini-2.5-flash');
+  eq('14 목록을 받았다', v.listed, true);
+  eq('14 모델 개수', v.models.length, 2);
+  eq('14 응답 맛보기', v.sample, 'OK');
+  eq('14 실제 생성까지 불렀다', f.gen().length, 1);
+  check('14 확인용 프롬프트를 쓴다', f.gen()[0].body.contents[0].parts[0].text === PING,
+    f.gen()[0].body.contents[0].parts[0].text);
+
+  // 14-2 목록은 되는데 생성만 막힌 키 — 목록 조회만 하는 checkKey는 못 걸러 낸다
+  reset();
+  const g = fakeFetch((c) => (c.model
+    ? errRes(403, 'Generative Language API has not been used in project')
+    : modelsRes(['gemini-2.5-flash'])));
+  const chk = await checkKey(KEY, deps(g));
+  eq('14 목록만 보면 통과해 버린다', chk.ok, true);
+  const v2 = await verifyKey({ key: KEY }, deps(g, fakeSleep()));
+  eq('14 실호출까지 하면 걸러진다', v2.ok, false);
+  check('14 실패 사유가 담긴다', v2.error.includes('has not been used'), v2.error);
+
+  // 14-3 목록 창구만 죽은 경우 — 실패가 아니다
+  reset();
+  const h = fakeFetch((c) => (c.model
+    ? (c.model === FALLBACK_MODELS[0] ? textRes('OK') : errRes(404, 'nope'))
+    : errRes(503, '목록 창구가 죽었다')));
+  const v3 = await verifyKey({ key: KEY }, deps(h, fakeSleep()));
+  eq('14 목록이 죽어도 확인은 통과', v3.ok, true);
+  eq('14 목록을 못 받았다고 표시', v3.listed, false);
+  check('14 목록 실패 사유를 남긴다', v3.listError.includes('목록 창구가 죽었다'), v3.listError);
+  eq('14 내장 이름을 목록 자리에 채운다', v3.models.join(','), FALLBACK_MODELS.join(','));
+
+  // 14-4 키 자체가 거부되면 생성은 두들기지도 않는다
+  reset();
+  const i = fakeFetch(() => errRes(400, 'API key not valid. Please pass a valid API key.'));
+  const v4 = await verifyKey({ key: KEY }, deps(i, fakeSleep()));
+  eq('14 키 거부는 실패', v4.ok, false);
+  eq('14 키 거부는 fatal', v4.fatal, true);
+  eq('14 키 거부면 생성 호출 없음', i.gen().length, 0);
+
+  // 14-5 모델을 지정하면 그 이름만 본다(폴백을 타지 않아 죽은 이름이 드러난다)
+  reset();
+  const j = fakeFetch((c) => (c.model ? errRes(404, '그런 모델 없다') : modelsRes(['gemini-2.5-flash'])));
+  const v5 = await verifyKey({ key: KEY, model: 'gemini-9.9-flash' }, deps(j, fakeSleep()));
+  eq('14 지정 모델만 시도', j.gen().length, 1);
+  eq('14 지정한 이름 그대로', j.gen()[0].model, 'gemini-9.9-flash');
+  eq('14 죽은 지정 모델은 실패로 드러난다', v5.ok, false);
+
+  // 14-6 키가 없으면 그물을 타지 않는다
+  const n = fakeFetch(() => okRes({}));
+  const v6 = await verifyKey({}, deps(n, fakeSleep()));
+  eq('14 키 없으면 실패', v6.ok, false);
+  check('14 키 없음 사유', v6.error.includes('키가 없다'), v6.error);
+  eq('14 키 없으면 호출 없음', n.calls.length, 0);
 }
 
 console.log(`통과 ${passed} / 실패 ${failed}`);

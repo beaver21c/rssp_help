@@ -69,7 +69,17 @@ async function boot() {
   } catch (e) {
     say('#r-status', '지표 데이터를 불러오지 못했다 — ' + e.message, 'err');
   }
-  syncKey();
+  // 저장해 둔 키가 있으면 들어오자마자 다시 확인한다. 어제 되던 모델이 오늘 없어졌으면
+  // 여기서 드러나고, 살아 있는 목록으로 우선 모델이 갱신된다.
+  if (gem.getKey()) {
+    $('#k-in').value = gem.getKey();
+    const local = gem.keyScope() === 'local';
+    $$('input[name=k-store]').forEach((r) => { r.checked = (r.value === 'local') === local; });
+    verify();
+  } else {
+    setState('need');
+    syncKey();
+  }
 }
 
 /* ───────── 탭 ───────── */
@@ -318,7 +328,7 @@ $('#w-showprompt').onclick = () => {
 /* ───────── 초안 생성 ───────── */
 $('#w-gen').onclick = async () => {
   if (!S.wSection) return say('#w-status', '먼저 절을 고른다', 'err');
-  if (!gem.getKey()) return say('#w-status', 'Gemini API 키를 먼저 설정한다 — 오른쪽 위 [API 키 미설정]', 'err');
+  if (!K.verified) return say('#w-status', '맨 위 띠에서 Gemini API 키를 넣고 확인을 끝낸 뒤에 쓴다', 'err');
   const btn = $('#w-gen'); btn.disabled = true;
   say('#w-status', 'AI가 초안을 쓰는 중…', 'busy');
   try {
@@ -647,7 +657,7 @@ $('#r-make').onclick = async () => {
 };
 
 $('#r-polish').onclick = async () => {
-  if (!gem.getKey()) return say('#r-pstatus', 'API 키 필요', 'err');
+  if (!K.verified) return say('#r-pstatus', '맨 위 띠에서 API 키 확인이 끝나야 쓴다', 'err');
   if (!$('#r-draft').value.trim()) return;
   say('#r-pstatus', '다듬는 중…', 'busy');
   try {
@@ -706,7 +716,7 @@ $('#c-run').onclick = async () => {
       for (const v of (lim.violations || lim)) out.push({ lv: 'err', msg: typeof v === 'string' ? v : v.message });
     }
     showIssues('#c-issues', '#c-isum', null, out);
-    $('#c-make').disabled = false; $('#c-fix').disabled = !gem.getKey();
+    $('#c-make').disabled = false; syncKey();
     say('#c-status', `되돌리기 완료 · 문단 ${rb.total}개(양식 대조 ${rb.matched}개) · 지적 ${out.length}건`,
       out.some((o) => o.lv === 'err') ? 'err' : 'ok');
   } catch (e) {
@@ -715,7 +725,7 @@ $('#c-run').onclick = async () => {
 };
 
 $('#c-fix').onclick = async () => {
-  if (!gem.getKey()) return say('#c-mstatus', 'API 키 필요', 'err');
+  if (!K.verified) return say('#c-mstatus', '맨 위 띠에서 API 키 확인이 끝나야 쓴다', 'err');
   say('#c-mstatus', '교정 중…', 'busy');
   try {
     const { text } = await gem.generate({
@@ -738,37 +748,126 @@ $('#c-make').onclick = async () => {
   } catch (e) { say('#c-mstatus', '산출 실패 — ' + e.message, 'err'); }
 };
 
-/* ───────── API 키 ───────── */
-function syncKey() {
-  const has = !!gem.getKey(), scope = gem.keyScope();
-  const chip = $('#keyBtn');
-  chip.classList.toggle('set', has);
-  $('#keyLbl').textContent = has
-    ? (scope === 'local' ? 'API 키 저장됨' : 'API 키 설정됨(이 탭)')
-    : 'API 키 미설정';
-  $('#w-gen').disabled = !has;
-  $('#c-fix').disabled = !has || !S.cDoc;
+/* ───────── API 키 — 화면 맨 위 설정 띠 ─────────
+   need(미설정) → busy(확인 중) → ok(실호출까지 통과) / fail(사유 표시) / off(키 없이 쓰기)
+
+   확인은 모델 목록 조회로 끝내지 않는다. 목록이 통해도 생성만 막힌 키가 있고,
+   무엇보다 구글이 모델 이름을 갈아 치우면 목록만으로는 그 사실이 드러나지 않는다.
+   그래서 실제 generateContent를 한 번 때려 보고, 답한 모델 이름을 화면에 박아 둔다. */
+const K = { models: [], verified: false, state: '' };
+
+const storeMode = () => ($$('input[name=k-store]').find((r) => r.checked) || {}).value === 'local';
+
+function setState(s) {
+  K.state = s;
+  $('#setup').dataset.state = s;
+  const busy = s === 'busy';
+  ['#k-go', '#k-in', '#k-recheck', '#k-model', '#k-skip'].forEach((q) => { $(q).disabled = busy; });
 }
 
-$('#keyBtn').onclick = () => {
+/** AI를 쓰는 단추는 확인이 끝난 뒤에만 열린다. */
+function syncKey() {
+  const on = K.verified && !!gem.getKey();
+  $('#w-gen').disabled = !on;
+  $('#r-polish').disabled = !on;
+  $('#c-fix').disabled = !on || !S.cDoc;
+}
+
+/* 우선 모델 선택 상자를 살아 있는 목록으로 다시 채운다.
+   기억해 둔 이름이 목록에서 사라졌으면 (목록에 없음)을 달아 그대로 보여 준다 —
+   조용히 지우면 왜 다른 모델이 답했는지 알 수 없다. */
+function fillModels(list, cur) {
+  const sel = $('#k-model');
+  const want = cur == null ? gem.getPreferred() : cur;
+  sel.innerHTML = '';
+  sel.appendChild(new Option('자동 — 앞선 것부터 차례로(권장)', ''));
+  for (const m of list) sel.appendChild(new Option(m, m));
+  if (want && !list.includes(want)) sel.appendChild(new Option(`${want} (목록에 없음)`, want));
+  sel.value = want || '';
+}
+
+async function verify() {
+  if (!gem.getKey()) { K.verified = false; setState('need'); syncKey(); return; }
+  K.verified = false;
+  setState('busy');
+  syncKey();
+  say('#k-test', '키를 확인하는 중… (모델 목록 조회 + 실제 생성 1회)', 'busy');
+  const pick = $('#k-model').value || '';
+  const res = await gem.verifyKey({ model: pick });
+  K.models = res.models || [];
+  K.verified = res.ok;
+  // 고른 값은 사람이 고른 그대로 둔다. 답한 모델을 여기에 되박으면 '자동'이 슬그머니
+  // 고정으로 바뀌어, 그 이름이 없어졌을 때 폴백이 막힌다(고정하면 폴백을 안 탄다).
+  fillModels(K.models, pick);
+
+  if (res.ok) {
+    setState('ok');
+    $('#k-oklbl').textContent = gem.keyScope() === 'local'
+      ? 'API 키 확인됨 · 이 브라우저에 저장' : 'API 키 확인됨 · 이 탭에서만';
+    const bits = [`응답 모델 ${res.model}`];
+    bits.push(res.listed ? `쓸 수 있는 모델 ${K.models.length}개` : '모델 목록은 못 받았다(내장 이름으로 연결)');
+    if (gem.storageBlocked()) bits.push('저장소가 막혀 메모리에만 둔다 — 새로 고치면 지워진다');
+    $('#k-okwhy').textContent = bits.join(' · ');
+    say('#k-test', '', '');
+  } else {
+    setState('fail');
+    // 특정 모델을 고정해 둔 채 막힌 것이면 되돌릴 길을 같은 줄에 내민다(선택 상자는 ok 줄에 있다)
+    $('#k-auto').hidden = !pick;
+    const tail = res.fatal ? ' · 키 자체가 거부됐다. 키를 다시 발급하거나 붙여넣기를 확인할 것'
+      : pick ? ` · ${pick} 모델을 고정해 둔 상태다. [자동 모델로 되돌려 다시 확인]을 눌러 볼 것`
+        : ' · 잠시 뒤 [키 확인하고 시작]을 다시 눌러 볼 것';
+    say('#k-test', '확인 실패 — ' + (res.error || '사유 불명') + tail, 'err');
+  }
+  syncKey();
+}
+
+function openKeyForm() {
   $('#k-in').value = gem.getKey();
   const local = gem.keyScope() === 'local';
   $$('input[name=k-store]').forEach((r) => { r.checked = (r.value === 'local') === local; });
-  $('#k-test').textContent = ''; $('#k-test').className = 'status';
-  $('#keyModal').classList.add('on');
-};
-const storeMode = () => ($$('input[name=k-store]').find((r) => r.checked) || {}).value === 'local';
-$('#k-save').onclick = () => { gem.setKey($('#k-in').value.trim(), storeMode()); syncKey(); $('#keyModal').classList.remove('on'); };
-$('#k-del').onclick = () => { gem.setKey('', false); $('#k-in').value = ''; syncKey(); $('#keyModal').classList.remove('on'); };
-$('#k-close').onclick = () => $('#keyModal').classList.remove('on');
-$('#k-check').onclick = async () => {
+  K.verified = false;
+  setState('need');
+  say('#k-test', '', '');
+  syncKey();
+  $('#k-in').focus();
+}
+
+$('#k-go').onclick = async () => {
   const typed = $('#k-in').value.trim();
-  if (typed && typed !== gem.getKey()) { gem.setKey(typed, storeMode()); syncKey(); }
-  say('#k-test', '확인 중…', 'busy');
-  try {
-    const models = await gem.listModels(gem.getKey());
-    say('#k-test', `정상 · 사용 가능한 모델 ${models.length}개 · 우선 ${models[0]}`, 'ok');
-  } catch (e) { say('#k-test', '확인 실패 — ' + e.message, 'err'); }
+  if (!typed) { say('#k-test', '키를 넣고 누른다', 'err'); return; }
+  if (typed !== gem.getKey()) gem.setKey(typed, storeMode());
+  else gem.clearModelCache();
+  await verify();
+};
+$('#k-in').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#k-go').click(); });
+$('#k-skip').onclick = () => { K.verified = false; setState('off'); syncKey(); };
+$('#k-open').onclick = openKeyForm;
+$('#k-edit').onclick = openKeyForm;
+$('#k-recheck').onclick = () => { gem.clearModelCache(); verify(); };
+$('#k-model').onchange = () => { gem.setPreferred($('#k-model').value); verify(); };
+$('#k-auto').onclick = () => {
+  gem.setPreferred('');
+  gem.clearModelCache();
+  fillModels(K.models, '');
+  verify();
+};
+$('#k-del').onclick = () => {
+  gem.setKey('', false);
+  gem.setPreferred('');
+  $('#k-in').value = '';
+  K.verified = false; K.models = [];
+  setState('need');
+  say('#k-test', '키를 지웠다', '');
+  syncKey();
+};
+/* 확인이 안 통했는데도 쓰겠다는 경우 — 막다른 길을 만들지 않되 무엇을 건너뛰는지는 남긴다 */
+$('#k-force').onclick = () => {
+  if (!gem.getKey()) return;
+  K.verified = true;
+  setState('ok');
+  $('#k-oklbl').textContent = '확인을 건너뛰고 사용 중';
+  $('#k-okwhy').textContent = '연결 확인이 통하지 않았다. 호출이 실패하면 각 화면의 상태줄에 사유가 뜬다';
+  syncKey();
 };
 
 /* ───────── 모달 닫기 ───────── */
