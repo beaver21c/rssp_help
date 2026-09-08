@@ -564,7 +564,42 @@ const reset = () => { clearModelCache(); setPreferred(''); };
   eq('14 지정한 이름 그대로', j.gen()[0].model, 'gemini-9.9-flash');
   eq('14 죽은 지정 모델은 실패로 드러난다', v5.ok, false);
 
-  // 14-6 키가 없으면 그물을 타지 않는다
+  // 14-6 크레딧이 바닥난 계정 — 모델을 바꿔 봐야 똑같이 막히므로 곧바로 멈춘다
+  //      (실제로 겪은 사유 문구를 그대로 쓴다)
+  const DEPLETED = 'Your prepayment credits are depleted. Please go to AI Studio at '
+    + 'https://ai.studio/projects to manage your project and billing.';
+  reset();
+  const p = fakeFetch((c) => (c.model ? errRes(429, DEPLETED)
+    : modelsRes(['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'])));
+  const s2 = fakeSleep();
+  const v7 = await verifyKey({ key: KEY }, deps(p, s2));
+  eq('14 크레딧 소진은 실패', v7.ok, false);
+  eq('14 크레딧 소진 표시', v7.billing, true);
+  eq('14 크레딧 소진도 fatal', v7.fatal, true);
+  eq('14 모델을 더 두들기지 않는다', p.gen().length, 1);
+  eq('14 헛기다림도 하지 않는다', s2.waits.length, 0);
+  check('14 구글 사유가 그대로 담긴다', v7.error.includes('prepayment credits are depleted'), v7.error);
+
+  // 같은 문구를 generate에서 만나도 마찬가지
+  reset();
+  const q = fakeFetch((c) => (c.model ? errRes(429, DEPLETED) : modelsRes(['gemini-2.5-flash', 'gemini-2.0-flash'])));
+  const e3 = await throws('14 generate도 크레딧 소진이면 던진다',
+    () => generate({ prompt: 'x', key: KEY }, deps(q, fakeSleep())));
+  eq('14 그 오류에 billing 표시', e3 && e3.billing, true);
+  eq('14 다음 모델로 안 넘어간다', q.gen().length, 1);
+
+  // 모델별 일일 한도(429)는 여기 걸리면 안 된다 — 다른 모델로 넘어가면 통할 수 있다
+  reset();
+  const QUOTA = 'You exceeded your current quota, please check your plan and billing details.';
+  const r2 = fakeFetch((c) => {
+    if (!c.model) return modelsRes(['gemini-2.5-flash', 'gemini-2.0-flash']);
+    return c.model === 'gemini-2.5-flash' ? errRes(429, QUOTA) : textRes('둘째가 답했다');
+  });
+  const out4 = await generate({ prompt: 'x', key: KEY }, deps(r2, fakeSleep()));
+  eq('14 일반 한도 초과는 다음 모델로 넘어간다', out4.model, 'gemini-2.0-flash');
+  check('14 billing 이라는 낱말만으로 중단하지 않는다', out4.text === '둘째가 답했다', out4.text);
+
+  // 14-7 키가 없으면 그물을 타지 않는다
   const n = fakeFetch(() => okRes({}));
   const v6 = await verifyKey({}, deps(n, fakeSleep()));
   eq('14 키 없으면 실패', v6.ok, false);

@@ -69,6 +69,16 @@ GitHub Pages로 배포하려면 저장소 Settings → Pages → Source를 **Git
 이 네 겹은 `tests/test_gemini.mjs`(가짜 fetch)와 `tests/test_e2e.mjs`(브라우저에서 구글 창구를
 가로채 이름 교체·목록 창구 사망·키 거부 상황을 실제로 만들어 본다)에서 검사한다.
 
+### 계정 쪽 문제는 기다려도 안 풀린다
+
+**선불 크레딧 소진**(`Your prepayment credits are depleted`)은 계정 단위라 모델을 바꾸거나
+기다려도 똑같이 막힌다. 그래서 이 사유를 만나면 목록을 더 돌지 않고 곧바로 멈추고,
+화면에 「기다려도 풀리지 않는다」와 함께 AI Studio 결제 화면으로 가는 길을 준다.
+
+모델별 일일 한도(`You exceeded your current quota, please check your plan and billing
+details`)는 다른 모델로 넘어가면 통할 때가 있으므로 여기 걸리지 않는다 —
+'billing'이라는 낱말이 아니라 크레딧 소진 문구만 집는다.
+
 ## 첨부파일
 
 | 형식 | 처리 |
@@ -119,8 +129,8 @@ node tests/test_docread.mjs          # 되돌리기 — 본문 구역만·마커
 node tests/test_attach.mjs           # 첨부파일 추출                         (139건)
 node tests/test_indicator.mjs        # 지표 산출·비교집단·차트                (59건)
 node tests/test_catalog_js.mjs       # 절 카탈로그 소비 모듈                  (79건)
-node tests/test_gemini.mjs           # 키 관리·모델 폴백·실호출 확인(가짜 fetch) (144건)
-node tests/test_e2e.mjs              # 브라우저에서 65개 마디 전부 산출        (732건)
+node tests/test_gemini.mjs           # 키 관리·모델 폴백·실호출 확인(가짜 fetch) (155건)
+node tests/test_e2e.mjs              # 브라우저에서 65개 마디 전부 산출        (738건)
 ```
 
 `test_e2e.mjs`는 Chromium을 띄워 실제 화면을 조작한다. 마디마다 양식을 넣고 hwpx를
@@ -130,7 +140,7 @@ node tests/test_e2e.mjs              # 브라우저에서 65개 마디 전부 �
 교체 → 목록 창구 사망 → 키 거부 → 키 삭제)를 돌려 본다. `--max=3`으로 줄여 돌릴 수 있고
 `--only=02-나-1`로 한 마디만 볼 수도 있다.
 
-최근 실행 결과 — 65/65 마디 산출, 단언 732건 전부 통과.
+최근 실행 결과 — 65/65 마디 산출, 단언 738건 전부 통과.
 
 ## 산출 방식에 관한 주의
 

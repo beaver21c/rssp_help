@@ -252,6 +252,15 @@ async function httpError(r) {
 const isKeyFault = (msg) => /api key|permission|expired/i.test(String(msg || ''));
 
 /**
+ * 계정의 선불 크레딧이 바닥난 경우인가. 이것도 계정 단위라 모델을 바꿔 봐야 똑같이 막힌다.
+ * 모델별 일일 한도("You exceeded your current quota, please check your plan and billing
+ * details")와는 다르다 — 그쪽은 다른 모델로 넘어가면 통할 때가 있으므로 여기 걸리면 안 된다.
+ * 그래서 'billing'이라는 낱말이 아니라 크레딧 소진 문구만 집는다.
+ */
+const isBillingFault = (msg) => /prepay|credits?\s+(are|is)\s+depleted|out of credits/i
+  .test(String(msg || ''));
+
+/**
  * 200이어도 본문이 JSON이 아닐 수 있다(프록시가 끼워 넣은 안내 쪽, 잘린 응답).
  * 날 SyntaxError를 그대로 흘리면 폴백 고리가 통째로 끊기니 한국어 사유로 바꿔 준다.
  */
@@ -389,6 +398,9 @@ export async function generate(opts, deps) {
       }
       last = await httpError(r);
       if (isKeyFault(last.message)) throw Object.assign(last, { fatal: true });
+      // 크레딧이 바닥난 것이면 다음 모델을 두들겨 봐야 똑같이 막힌다. 2초씩 쉬며
+      // 목록 전체를 도는 헛수고 대신 곧바로 사유를 들고 나간다.
+      if (isBillingFault(last.message)) throw Object.assign(last, { fatal: true, billing: true });
       // 없어진 이름을 계속 물고 있지 않는다
       if (last.status === 404 && model === getPreferred()) setPreferred('');
       // 429는 잠깐 쉬었다 다음 모델로. 마지막 모델이면 쉬어 봐야 헛기다림이다.
@@ -434,7 +446,7 @@ export const PING = '연결 확인이다. 다른 말 없이 정확히 OK 라고�
 export async function verifyKey(opts, deps) {
   const o = opts || {};
   const out = { ok: false, model: '', models: [], listed: false, listError: '',
-    error: '', fatal: false, sample: '', scope: keyScope() };
+    error: '', fatal: false, billing: false, sample: '', scope: keyScope() };
   let key;
   try {
     key = needKey(o.key);
@@ -446,8 +458,12 @@ export async function verifyKey(opts, deps) {
     out.models = await listModels(key, deps);
     out.listed = true;
   } catch (e) {
-    // 키가 거부된 것이면 생성도 볼 것 없다. 그 밖의 사유는 내장 목록으로 계속 간다.
+    // 키가 거부됐거나 크레딧이 바닥난 것이면 생성도 볼 것 없다(둘 다 계정 단위).
+    // 그 밖의 사유는 내장 목록으로 계속 간다.
     if (isKeyFault(e && e.message)) { out.error = e.message; out.fatal = true; return out; }
+    if (isBillingFault(e && e.message)) {
+      out.error = e.message; out.fatal = true; out.billing = true; return out;
+    }
     out.models = [...FALLBACK_MODELS];
     out.listError = e.message;
   }
@@ -460,6 +476,7 @@ export async function verifyKey(opts, deps) {
   } catch (e) {
     out.error = e.message;
     out.fatal = !!e.fatal;
+    out.billing = !!e.billing;
   }
   return out;
 }

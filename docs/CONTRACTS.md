@@ -178,6 +178,7 @@ opts = { system: string, prompt: string,
 | 죽은 이름은 즉시 버린다 | 그 모델이 404면 `setPreferred('')` |
 | 목록이 막혀도 진행 | `listModels` 실패는 치명적이지 않다. `FALLBACK_MODELS`로 계속하고 실패 사유를 최종 오류 메시지에 덧붙인다. 단 키 오류는 예외(즉시 중단) |
 | 확인은 실호출로 | `verifyKey`는 목록 조회 뒤 `PING` 프롬프트로 `generateContent`를 한 번 부른다. `model`을 주면 그 이름만 시험한다(폴백을 타지 않아 죽은 이름이 드러난다) |
+| 계정 단위 문제는 즉시 중단 | 크레딧 소진(`prepay`·`credits are depleted`·`out of credits`)은 모델을 바꿔도 똑같이 막히므로 `err.fatal = err.billing = true`로 곧바로 던진다. 모델별 일일 한도(`exceeded your current quota … plan and billing`)는 여기 걸리면 안 된다 — 낱말 'billing'이 아니라 크레딧 소진 문구만 집는다 |
 
 화면(`app.js`)은 이 계약 위에 `need → busy → ok/fail/off` 상태 띠를 올린다.
 `K.verified`가 참일 때만 AI 단추가 열린다.

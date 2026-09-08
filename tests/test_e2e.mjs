@@ -498,6 +498,28 @@ head('API 키 — 실호출 확인 절차와 모델 교체 대비');
   ok(msg.includes('API key not valid'), '구글이 준 사유를 그대로 보여 준다', msg);
   ok(await page.isDisabled('#w-gen'), '확인이 깨지면 AI 기능이 다시 잠긴다');
 
+  // 4-2) 크레딧이 바닥난 계정 — 실제로 겪은 사유다. 기다리라고 하면 안 되고,
+  //      모델을 더 두들겨도 안 되며, 어디를 손봐야 하는지 짚어 줘야 한다
+  const DEPLETED = 'Your prepayment credits are depleted. Please go to AI Studio at '
+    + 'https://ai.studio/projects to manage your project and billing.';
+  const before = urls.length;
+  mock.list = () => listOK(['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash']);
+  mock.gen = () => errJ(429, DEPLETED);
+  await page.fill('#k-in', FAKE);
+  await page.click('#k-go');
+  await waitState('fail');
+  const msg2 = await page.textContent('#k-test');
+  ok(msg2.includes('prepayment credits are depleted'), '크레딧 소진 사유를 그대로 보여 준다', msg2);
+  const gens = urls.slice(before).filter((u) => /:generateContent$/.test(u));
+  ok(gens.length === 1, '모델을 더 두들기지 않는다(계정 단위 문제)', `생성 호출 ${gens.length}회`);
+  const fix = await page.locator('#k-fix');
+  ok(await fix.isVisible(), '조치 안내가 나온다');
+  const fixTxt = await fix.textContent();
+  ok(/기다려도 풀리지 않는다/.test(fixTxt), '기다리라고 하지 않는다', fixTxt);
+  ok(await fix.locator('a[href="https://ai.studio/projects"]').count() === 1,
+    'AI Studio 결제 화면으로 가는 길을 준다', fixTxt);
+  ok(/키 없이 쓰기/.test(fixTxt), '그동안 쓸 수 있는 기능을 알려 준다', fixTxt);
+
   // 5) 막다른 길을 만들지 않는다 — 확인을 건너뛰고 쓰겠다는 길
   await page.click('#k-force');
   await waitState('ok');

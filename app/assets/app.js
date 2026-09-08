@@ -343,12 +343,17 @@ $('#w-gen').onclick = async () => {
     say('#w-status', `초안 작성 완료 · 모델 ${model}`, 'ok');
     runLint();
   } catch (e) {
-    say('#w-status', '호출 실패 — ' + e.message + (e.fatal ? ' (API 키를 확인할 것)' : ''), 'err');
+    say('#w-status', '호출 실패 — ' + e.message + failTail(e), 'err');
   }
   btn.disabled = false;
 };
 
 const stripFence = (t) => String(t).replace(/^```[a-z]*\n?/i, '').replace(/```\s*$/, '').trim();
+
+/* 호출 실패에 덧붙이는 한 줄. 계정 단위 문제는 다시 눌러도 안 풀리니 그렇게 적는다. */
+const failTail = (e) => (e && e.billing
+  ? ' — 구글 계정의 선불 크레딧이 바닥났다. AI Studio(ai.studio/projects)에서 결제를 처리해야 한다'
+  : e && e.fatal ? ' — API 키가 거부됐다. 맨 위 띠에서 키를 다시 확인할 것' : '');
 
 /* 표 칸 하나를 파이프 표에 넣을 수 있는 한 줄로 눕힌다.
    안내서 머리행에는 줄바꿈이 흔하다("성과지표 명\n(단위)"). 그대로 쓰면 파이프 표
@@ -669,7 +674,7 @@ $('#r-polish').onclick = async () => {
     });
     $('#r-draft').value = stripFence(text);
     say('#r-pstatus', '완료', 'ok');
-  } catch (e) { say('#r-pstatus', '실패 — ' + e.message, 'err'); }
+  } catch (e) { say('#r-pstatus', '실패 — ' + e.message + failTail(e), 'err'); }
 };
 
 /* ───────── 양식 점검 ───────── */
@@ -736,7 +741,7 @@ $('#c-fix').onclick = async () => {
     });
     $('#c-draft').value = stripFence(text);
     say('#c-mstatus', '교정 완료 — 내용을 확인한 뒤 다시 만든다', 'ok');
-  } catch (e) { say('#c-mstatus', '실패 — ' + e.message, 'err'); }
+  } catch (e) { say('#c-mstatus', '실패 — ' + e.message + failTail(e), 'err'); }
 };
 
 $('#c-make').onclick = async () => {
@@ -763,6 +768,7 @@ function setState(s) {
   $('#setup').dataset.state = s;
   const busy = s === 'busy';
   ['#k-go', '#k-in', '#k-recheck', '#k-model', '#k-skip'].forEach((q) => { $(q).disabled = busy; });
+  if (s !== 'fail') $('#k-fix').hidden = true;
 }
 
 /** AI를 쓰는 단추는 확인이 끝난 뒤에만 열린다. */
@@ -813,12 +819,33 @@ async function verify() {
     setState('fail');
     // 특정 모델을 고정해 둔 채 막힌 것이면 되돌릴 길을 같은 줄에 내민다(선택 상자는 ok 줄에 있다)
     $('#k-auto').hidden = !pick;
-    const tail = res.fatal ? ' · 키 자체가 거부됐다. 키를 다시 발급하거나 붙여넣기를 확인할 것'
-      : pick ? ` · ${pick} 모델을 고정해 둔 상태다. [자동 모델로 되돌려 다시 확인]을 눌러 볼 것`
-        : ' · 잠시 뒤 [키 확인하고 시작]을 다시 눌러 볼 것';
-    say('#k-test', '확인 실패 — ' + (res.error || '사유 불명') + tail, 'err');
+    say('#k-test', '확인 실패 — ' + (res.error || '사유 불명'), 'err');
+    showFix(res, pick);
   }
   syncKey();
+}
+
+/* 사유별 조치 안내. 「잠시 뒤 다시」로 뭉뚱그리면 기다려도 안 풀리는 문제까지
+   기다리게 만든다. 계정 단위 문제(크레딧·키)와 일시적 문제를 갈라 적는다. */
+function showFix(res, pick) {
+  const box = $('#k-fix');
+  let html = '';
+  if (res.billing) {
+    html = '구글 계정의 선불 크레딧이 바닥났다. <b>모델을 바꾸거나 기다려도 풀리지 않는다</b> — '
+      + '<a href="https://ai.studio/projects" target="_blank" rel="noopener noreferrer">AI Studio</a>에서 '
+      + '결제·크레딧을 처리한 뒤 다시 확인한다. 그동안 <b>지역여건 분석</b>·<b>양식 점검</b>은 '
+      + '[키 없이 쓰기]로 그대로 쓸 수 있다.';
+  } else if (res.fatal) {
+    html = '키 자체가 거부됐다. 붙여넣기가 온전한지 보고, 아니면 '
+      + '<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer">AI Studio</a>에서 '
+      + '키를 다시 발급한다.';
+  } else if (pick) {
+    html = `${esc(pick)} 모델을 고정해 둔 상태다. [자동 모델로 되돌려 다시 확인]을 눌러 본다.`;
+  } else {
+    html = '연결이나 한도 쪽 문제일 수 있다. 잠시 뒤 [키 확인하고 시작]을 다시 누른다.';
+  }
+  box.innerHTML = html;
+  box.hidden = false;
 }
 
 function openKeyForm() {
