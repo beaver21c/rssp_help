@@ -33,10 +33,14 @@ export const DEFAULT_FAMILY = /flash-lite/i;
 
 /**
  * 모델 목록 창구까지 막혔을 때만 쓰는 이름들. 무료 몫이 넉넉한 차례로 적되,
- * 여기 적힌 이름도 언제든 죽을 수 있다는 전제로 여러 개를 둔다.
+ * 여기 적힌 이름도 언제든 죽는다는 전제로 여러 개를 둔다.
+ *
+ * 2026-09 기준으로 확인한 판도 — 2.0 계열은 2026-06-01 종료, 2.5 계열은 2026-10-16 종료
+ * 예정이라 이미 신규 사용자에게 막혔다. 그래서 3.x Flash-Lite를 앞에 두고 2.5는 꼬리에만
+ * 남긴다. **이 목록은 최후 수단일 뿐이고 정상 경로는 실행 시점 목록 조회다.**
  */
 export const FALLBACK_MODELS = [
-  'gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.5-flash',
+  'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.5-flash', 'gemini-2.5-flash-lite',
 ];
 
 /** 이름만 보고 걸러 내는 모델. 실험·미리보기·음성·그림·임베딩 계열은 원고 생성에 안 맞는다. */
@@ -165,23 +169,24 @@ const authHeader = (key) => ({ 'x-goog-api-key': key });
 // 모델 목록·우선순위
 // ──────────────────────────────────────────────────────────────
 /**
- * 정렬 기준값 [flash 여부, 버전, lite 여부].
- * 무료 등급에서 flash 계열이 한도가 넉넉하니 앞세우고, 같은 계열이면 버전이 높은 것을,
- * 동버전이면 **lite를 앞에** 둔다 — lite 쪽 하루 요청 수가 몇 배 크기 때문이다.
- * (유료로 쓰면서 품질을 앞세우고 싶으면 화면에서 [우선 모델]을 직접 고르면 된다.)
+ * 정렬 기준값 **[flash 여부, lite 여부, 판 번호]** — 이 차례가 중요하다.
+ *
+ * 판 번호를 lite보다 먼저 보면 새로 나온 상위 모델(예: gemini-3.8-flash)이 기본이 되어
+ * 무료 등급에서 곧바로 한도에 걸린다. 이 도구의 기본은 **무료로 오래 돌아가는 것**이므로
+ * ①flash 계열 ②그중 lite ③그중 가장 높은 판 차례로 고른다.
+ * 품질을 앞세우고 싶으면 화면의 [우선 모델]에서 직접 고르면 된다.
  */
 export function rankModel(name) {
   const n = String(name || '');
   const v = n.match(/(\d+)\.(\d+)/) || [0, 0, 0];
   const ver = (+v[1]) * 100 + (+v[2]);
-  const lite = n.includes('lite') ? 1 : 0;
-  return [n.includes('flash') ? 1 : 0, ver, lite];
+  return [n.includes('flash') ? 1 : 0, n.includes('lite') ? 1 : 0, ver];
 }
 
 const byRank = (a, b) => {
   const x = rankModel(a);
   const y = rankModel(b);
-  return y[0] - x[0] || y[1] - x[1] || y[2] - x[2];
+  return y[0] - x[0] || y[1] - x[1] || y[2] - x[2] || a.localeCompare(b);
 };
 
 /** 이름 목록을 계약대로 걸러 내고 정렬한다. 순수 함수라 시험에서 바로 부를 수 있다. */
@@ -205,8 +210,9 @@ const PREF_NAME = 'gemini_model';
 
 export function getPreferred() {
   const s = store('local');
+  // 저장소가 멀쩡하면 그것만 믿는다. 메모리로 되살리면 다른 탭에서 지운 값이 살아 돌아온다.
   if (!s) return memory.pref || '';
-  try { return s.getItem(PREF_NAME) || memory.pref || ''; }
+  try { return s.getItem(PREF_NAME) || ''; }
   catch (e) { return memory.pref || ''; }
 }
 

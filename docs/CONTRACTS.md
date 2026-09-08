@@ -217,3 +217,45 @@ export function clearUsage(): void
 - `tests/*.mjs` — Node 22에서 `node tests/xxx.mjs`로 바로 돈다. 시험 프레임워크 없음
 - 실패는 `process.exitCode = 1` + 사유 출력
 - E2E는 Playwright + `/opt/pw-browsers/chromium`. `playwright install` 금지
+
+## 8. `app/assets/workspace.js` — 작업 폴더
+
+```js
+export function supported(): boolean          // showDirectoryPicker + indexedDB
+export async function pick(): string          // 사용자 클릭 안에서만. 취소하면 ''
+export async function restore(): {name, need, handle}
+export async function grant(handle): string   // 사용자 클릭 안에서만
+export async function forget(): void
+export function current() / folderName()
+export async function saveFile(name, bytes): string
+export async function listFiles(ext): [{name, size, at}]
+export async function readFile(name): Uint8Array
+export async function readJson(name, dflt) / writeJson(name, obj)
+```
+
+- 폴더 핸들은 IndexedDB(`rssp_ws/handles/outdir`)에 담는다. JSON으로 못 바꾸므로 구조적 복제로 저장
+- **지원하지 않는 브라우저에서 화면이 멈추면 안 된다.** `supported()`가 거짓이면 쓰는 쪽이
+  내려받기로 물러난다
+- `listFiles`는 `_`·`.`로 시작하는 파일을 뺀다(맥락 장부를 목록에 노출하지 않는다)
+
+## 9. `app/assets/context.js` — 앞 절 결정 사항 카드
+
+```js
+export const CARD_FILE = '_맥락.json'
+export const DEFAULT_BUDGET = 6000   // 지시문에 들어갈 맥락 글 상한
+export const MAX_CARD = 700          // 카드 하나 상한
+export const HEADER_SIZE             // 머리말 길이(예산 계산에 포함)
+export function cardFrom(node, text, at): Card    // AI를 부르지 않는다
+export function mergeCard(cards, card): Card[]
+export function scoreCard(target, card, catalog): number
+export function pickCards(target, cards, catalog, budget): Card[]
+export function contextBlock(cards): string
+export function sizeOf(card): number
+export const chapterOf = (id) => string
+```
+
+- **절 전문을 나르지 않는다.** 담는 것은 이름(전략·사업)·표 골격·요지·수치뿐
+- 카드는 `MAX_CARD` 안으로 줄인다. 덜어 내는 차례는 수치 → 요지 → 표 → 이름(마지막까지 지킴)
+- `pickCards`는 `HEADER_SIZE`를 미리 빼고 예산을 잰다. 안 그러면 실제 지시문이 상한을 넘는다
+- 아직 쓰지 않은 뒤쪽 절 카드는 0점 — 문서 차례를 거슬러 넣지 않는다
+- 고른 카드는 **문서 차례대로** 돌려준다

@@ -8,7 +8,7 @@
 "use strict";
 
 import {
-  TZ, FREE_TIER, FREE_TIER_SOURCE,
+  TZ, FREE_TIER, FREE_TIER_SOURCE, familyOf,
   ptDay, nextResetAt, untilReset, resetText,
   load, clearUsage, bump, markExhausted, isExhausted, usable, usage, limitOf,
   fingerprint, setVerified, isVerified, clearVerified,
@@ -110,14 +110,22 @@ const iso = (s) => new Date(s);
 {
   clearUsage();
   const t = iso('2026-09-08T13:00:00Z');
-  const ref = limitOf('gemini-2.5-flash-lite', t);
+  const ref = limitOf('gemini-3.5-flash-lite', t);
   eq('5 참고값을 쓴다', ref.source, 'reference');
-  eq('5 참고값 숫자', ref.rpd, FREE_TIER['gemini-2.5-flash-lite'].rpd);
-  markExhausted('gemini-2.5-flash-lite', 50, t);
-  const obs = limitOf('gemini-2.5-flash-lite', t);
+  eq('5 계열로 맞춘다', ref.label, 'Flash-Lite');
+  eq('5 참고값 숫자', ref.rpd, 1000);
+  markExhausted('gemini-3.5-flash-lite', 50, t);
+  const obs = limitOf('gemini-3.5-flash-lite', t);
   eq('5 관측값이 앞선다', obs.source, 'observed');
   eq('5 관측값 숫자', obs.rpd, 50);
-  eq('5 모르는 모델은 모른다고 한다', limitOf('gemini-9.9-unknown', t).source, 'unknown');
+  eq('5 모르는 모델은 모른다고 한다', limitOf('imagen-4.0-generate', t).source, 'unknown');
+
+  // 판이 올라가도 계열로 잡히므로 표가 비지 않는다 — 이름을 하나하나 적지 않는 까닭
+  eq('5 새 판도 Flash-Lite로 잡힌다', (familyOf('gemini-9.9-flash-lite') || {}).label, 'Flash-Lite');
+  eq('5 lite가 flash보다 먼저 걸린다', (familyOf('gemini-3.5-flash-lite') || {}).label, 'Flash-Lite');
+  eq('5 lite 아닌 flash', (familyOf('gemini-3.8-flash') || {}).label, 'Flash');
+  eq('5 pro 계열', (familyOf('gemini-3.5-pro') || {}).label, 'Pro');
+  eq('5 계열 밖은 null', familyOf('text-embedding-004'), null);
 
   check('5 참고값에 출처가 붙어 있다',
     /ai\.google\.dev/.test(FREE_TIER_SOURCE.url) && FREE_TIER_SOURCE.note.length > 20,

@@ -142,14 +142,20 @@ const reset = () => { clearModelCache(); setPreferred(''); clearUsage(); };
   ]);
   eq('2 정렬 결과',
     got.join(','),
-    ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.0-flash-lite', 'gemini-2.0-flash',
+    ['gemini-2.5-flash-lite', 'gemini-2.0-flash-lite', 'gemini-2.5-flash', 'gemini-2.0-flash',
       'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-2.5-pro'].join(','));
   check('2 flash가 pro보다 앞', got.indexOf('gemini-2.5-flash') < got.indexOf('gemini-1.5-pro'));
-  check('2 버전 높은 쪽이 앞', got.indexOf('gemini-2.5-flash') < got.indexOf('gemini-2.0-flash'));
-  // 무료 등급에서 하루 몫이 몇 배 넉넉하므로 lite를 앞에 둔다
-  check('2 lite가 동버전 앞', got.indexOf('gemini-2.5-flash-lite') < got.indexOf('gemini-2.5-flash'));
+  check('2 같은 갈래 안에서 판 높은 쪽이 앞',
+    got.indexOf('gemini-2.5-flash') < got.indexOf('gemini-2.0-flash'));
+  // ★ lite를 판 번호보다 먼저 본다. 안 그러면 새로 나온 상위 모델이 기본이 되어
+  //   무료 등급에서 곧바로 한도에 걸린다(2026-09에 3.7·3.8 Flash가 나온 상황)
+  check('2 낮은 판 lite가 높은 판 non-lite보다 앞',
+    got.indexOf('gemini-2.0-flash-lite') < got.indexOf('gemini-2.5-flash'), got.join(','));
+  eq('2 새 상위 판이 나와도 lite가 기본',
+    orderModels(['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.5-flash-lite'])[0],
+    'gemini-3.5-flash-lite');
   check('2 flash 아닌 것은 원래 차례대로', got.slice(-2).join(',') === 'gemini-1.5-pro,gemini-2.5-pro');
-  eq('2 rankModel 값', JSON.stringify(rankModel('gemini-2.5-flash-lite')), JSON.stringify([1, 205, 1]));
+  eq('2 rankModel 값', JSON.stringify(rankModel('gemini-2.5-flash-lite')), JSON.stringify([1, 1, 205]));
   // 기본은 이름이 아니라 계열이다 — 목록에서 가장 높은 판의 flash-lite를 집는다
   eq('2 기본 모델은 목록에서 고른다', defaultModel(got), 'gemini-2.5-flash-lite');
   eq('2 판이 올라가면 그쪽을 집는다',
@@ -158,6 +164,11 @@ const reset = () => { clearModelCache(); setPreferred(''); clearUsage(); };
   eq('2 lite가 없으면 빈 값', defaultModel(orderModels(['gemini-2.5-flash', 'gemini-2.5-pro'])), '');
   check('2 기본 계열은 flash-lite', DEFAULT_FAMILY.test('gemini-9.9-flash-lite'));
   check('2 내장 목록도 flash-lite가 맨 앞', /flash-lite/.test(FALLBACK_MODELS[0]), FALLBACK_MODELS[0]);
+  // 2026-09 기준 이미 종료됐거나 종료 예정인 판을 내장 목록 앞자리에 두지 않는다
+  check('2 내장 목록에 2.0 계열이 없다', !FALLBACK_MODELS.some((m) => /-2\.0-/.test(m)),
+    FALLBACK_MODELS.join(','));
+  check('2 내장 목록 앞 세 자리는 3.x', FALLBACK_MODELS.slice(0, 3).every((m) => /-3\./.test(m)),
+    FALLBACK_MODELS.join(','));
 }
 
 // ──────────────────────────────────────────────────────────────

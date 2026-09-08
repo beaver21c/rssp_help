@@ -10,6 +10,8 @@ import { loadIndex, groupCodes, analyze, narrate, KEY_CODES } from './indicator.
 import { renderComparisonChart } from './chart.js';
 import * as gem from './gemini.js';
 import * as quota from './quota.js';
+import * as ws from './workspace.js';
+import { CARD_FILE, cardFrom, mergeCard, pickCards, contextBlock } from './context.js';
 import { readBodyText } from './docread.js';
 import { injectRawBlocks, token as layoutToken, usedKeys } from './rawblock.js';
 
@@ -39,12 +41,30 @@ function download(bytes, name) {
 /* 파일명으로 쓸 수 없는 글자를 걷어낸다 */
 const safeName = (s) => String(s).replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, '_').slice(0, 80);
 
+/* 산출물 넘기기 — 작업 폴더가 잡혀 있으면 거기 쓰고, 아니면 종전대로 내려받는다.
+   돌려주는 값은 화면에 덧붙일 한 줄. */
+async function deliver(bytes, name) {
+  if (ws.current()) {
+    try {
+      const put = await ws.saveFile(name, bytes);
+      await refreshFolder();
+      return ` · 작업 폴더에 저장 (${ws.folderName()}/${put})`;
+    } catch (e) {
+      download(bytes, name);            // 폴더에 못 쓰면 잃지 말고 내려받는다
+      return ` · 폴더에 쓰지 못해 내려받았다 (${e.message})`;
+    }
+  }
+  download(bytes, name);
+  return '';
+}
+
 /* ───────── 상태 ───────── */
 const S = {
   catalog: null, form: null, template: null,
   wSection: null, wFiles: [], wDraft: '',
   regions: null, indexCat: null, rows: null, rPng: null,
   cDoc: null, cName: '',
+  cards: [], wsPending: null,
 };
 
 /* ───────── 부팅 ───────── */
@@ -70,6 +90,20 @@ async function boot() {
   } catch (e) {
     say('#r-status', '지표 데이터를 불러오지 못했다 — ' + e.message, 'err');
   }
+  // 지난번 작업 폴더를 되살린다. 권한이 남아 있으면 바로 잡히고, 다시 물어야 하면
+  // 사용자가 한 번 눌러 줘야 한다(브라우저가 클릭 없이는 안 묻는다).
+  try {
+    const back = await ws.restore();
+    if (back.need) {
+      S.wsPending = back.handle;
+      $('#ws-grant').hidden = false;
+      say('#ws-state', `지난번 폴더 ${back.name} — [폴더 권한 다시 주기]를 누르면 이어서 쓴다`, '');
+    }
+    await refreshFolder();
+  } catch (e) {
+    say('#ws-state', '폴더 상태를 확인하지 못했다 — ' + e.message, 'err');
+  }
+
   // 저장해 둔 키가 있으면 다시 확인한다. 어제 되던 모델이 오늘 없어졌으면 여기서 드러난다.
   // 다만 **오늘 이미 확인한 키면 실호출을 건너뛴다** — 무료 등급에서는 페이지를 열 때마다
   // 하루 몫을 한 칸씩 쓰는 것이 아깝다. [다시 확인]을 누르면 그때는 진짜로 부른다.
@@ -322,6 +356,11 @@ function assemblePrompt() {
       shows.map((h, i) => `작성례 ${i + 1} (${h.form.rows}행 ${h.form.cols}열)\n`
         + gridText(h.form.grid, h.form.cols, 12)).join('\n\n').slice(0, 12000));
   }
+  // 앞서 낸 절의 결정 사항 — 관련 있는 카드만 예산 안에서 골라 넣는다
+  if ($('#w-ctx').checked) {
+    const block = contextBlock(pickCards(S.wSection, S.cards, S.catalog));
+    if (block) parts.push(block);
+  }
   const req = $('#w-prompt').value.trim();
   const src = $('#w-src').value.trim();
   if (req) parts.push('[담당자 요청]\n' + req);
@@ -526,6 +565,115 @@ async function makeDoc(text, images) {
   return { ...res, bytes: out.bytes, layouts: out.placed };
 }
 
+/* ───────── 작업 폴더와 맥락 장부 ─────────
+   1단계 — 산출물을 사용자가 정한 폴더에 바로 쓰고, 그 폴더의 앞선 절을 골라 [참고 원문]에 넣는다.
+   2단계 — 절을 낼 때마다 결정 사항만 카드로 뽑아 폴더의 _맥락.json에 쌓고, 다음 절 지시문에
+           관련 카드만 자동으로 넣는다. 카드 추출에는 AI를 부르지 않아 하루 몫을 축내지 않는다. */
+
+/** 폴더 화면을 지금 상태로 다시 그린다. */
+async function refreshFolder() {
+  const box = $('#ws-state');
+  const list = $('#ws-files');
+  const has = !!ws.current();
+  $('#ws-pick').textContent = has ? '폴더 바꾸기' : '작업 폴더 지정';
+  $('#ws-drop').hidden = !has;
+  $('#ws-body').hidden = !has;
+
+  if (!ws.supported()) {
+    box.className = 'status';
+    box.textContent = '이 브라우저는 폴더 지정을 지원하지 않는다(크롬·엣지에서 됨). 산출물은 기본 내려받기 폴더로 간다.';
+    $('#ws-pick').disabled = true;
+    return;
+  }
+  if (!has) {
+    box.className = 'status';
+    box.textContent = '폴더를 지정하면 산출물이 그 폴더에 바로 쌓이고, 앞서 쓴 절을 맥락으로 쓸 수 있다.';
+    return;
+  }
+
+  list.innerHTML = '';
+  let files = [];
+  try {
+    files = await ws.listFiles('.hwpx');
+  } catch (e) {
+    say('#ws-state', '폴더를 읽지 못했다 — ' + e.message, 'err');
+    return;
+  }
+  S.cards = await ws.readJson(CARD_FILE, []);
+  if (!Array.isArray(S.cards)) S.cards = [];
+
+  say('#ws-state', `${ws.folderName()} · 산출물 ${files.length}개 · 맥락 카드 ${S.cards.length}개`, 'ok');
+  if (!files.length) {
+    list.innerHTML = '<li class="empty">아직 이 폴더에 산출물이 없다.</li>';
+    return;
+  }
+  for (const f of files) {
+    const li = el('li');
+    li.innerHTML = `<span class="nm">${esc(f.name)}</span>`
+      + `<span class="sz">${kb(f.size || 0)}</span>`;
+    const b = el('button', 'btn ghost sm', '참고 원문으로');
+    b.onclick = () => useAsSource(f.name);
+    li.appendChild(b);
+    list.appendChild(li);
+  }
+}
+
+/** 폴더 안 산출물 하나를 마커 원고로 되돌려 [참고 원문]에 넣는다(1단계 수동 경로). */
+async function useAsSource(name) {
+  say('#ws-state', `${name} 읽는 중…`, 'busy');
+  try {
+    const bytes = await ws.readFile(name);
+    const rb = await readBodyText(bytes, S.form);
+    const box = $('#w-src');
+    const head = `[${name}에서 되돌린 원고]`;
+    box.value = (box.value.trim() ? box.value.trim() + '\n\n' : '') + head + '\n' + rb.text;
+    $$('.tab').find((t) => t.dataset.tab === 'write').click();
+    box.focus();
+    say('#ws-state', `${name} → [참고 원문]에 넣었다 (${rb.total}문단)`, 'ok');
+  } catch (e) {
+    say('#ws-state', '읽지 못했다 — ' + e.message, 'err');
+  }
+}
+
+/** 절을 낸 뒤 그 절의 결정 사항을 카드로 남긴다(2단계). 폴더가 없으면 이 판에서만 기억한다. */
+async function noteCard(node, text) {
+  if (!node) return '';
+  const card = cardFrom(node, text, new Date());
+  S.cards = mergeCard(S.cards, card);
+  if (!ws.current()) return ' · 맥락 카드는 이 탭에서만 유지된다(폴더를 지정하면 남는다)';
+  try {
+    await ws.writeJson(CARD_FILE, S.cards);
+    return ` · 맥락 카드 ${S.cards.length}개`;
+  } catch (e) {
+    return ' · 맥락 카드를 폴더에 쓰지 못했다: ' + e.message;
+  }
+}
+
+$('#ws-pick').onclick = async () => {
+  try {
+    const got = await ws.pick();
+    if (!got) return;                        // 사용자가 취소
+    await refreshFolder();
+  } catch (e) {
+    say('#ws-state', '폴더를 잡지 못했다 — ' + e.message, 'err');
+  }
+};
+$('#ws-drop').onclick = async () => {
+  await ws.forget();
+  S.cards = [];
+  await refreshFolder();
+};
+$('#ws-grant').onclick = async () => {
+  try {
+    await ws.grant(S.wsPending);
+    S.wsPending = null;
+    $('#ws-grant').hidden = true;
+    await refreshFolder();
+  } catch (e) {
+    say('#ws-state', '권한을 받지 못했다 — ' + e.message, 'err');
+  }
+};
+
 /* ───────── 절 hwpx 산출 ───────── */
 $('#w-make').onclick = async () => {
   const text = $('#w-draft').value;
@@ -534,11 +682,12 @@ $('#w-make').onclick = async () => {
   try {
     const res = await makeDoc(text, new Map());
     const n = S.wSection;
-    download(res.bytes, `${safeName((n ? (n.id + '_' + n.title) : '절'))}.hwpx`);
+    const where = await deliver(res.bytes, `${safeName((n ? (n.id + '_' + n.title) : '절'))}.hwpx`);
+    const card = await noteCard(n, text);
     const bad = (res.issues || []).length;
     say('#w-mstatus', `산출 완료 (${kb(res.bytes.length)})`
       + (res.layouts.length ? ` · 도식 ${res.layouts.length}개 포함` : '')
-      + (bad ? ` · 경고 ${bad}건` : ''), bad ? '' : 'ok');
+      + (bad ? ` · 경고 ${bad}건` : '') + where + card, bad ? '' : 'ok');
   } catch (e) {
     say('#w-mstatus', '산출 실패 — ' + e.message, 'err');
   }
@@ -685,8 +834,10 @@ $('#r-make').onclick = async () => {
     if (!text.includes(`![](${IMG})`)) text = insertImage(text, IMG);
     const res = await makeDoc(text, new Map([[IMG, S.rPng]]));
     const sec = findSection(S.catalog, $('#r-sec').value);
-    download(res.bytes, `${safeName((sec ? sec.id + '_' : '') + '지역여건_' + regionLabel(S.rOpts))}.hwpx`);
-    say('#r-mstatus', `산출 완료 (${kb(res.bytes.length)}) · 그래프 포함`, 'ok');
+    const where = await deliver(res.bytes,
+      `${safeName((sec ? sec.id + '_' : '') + '지역여건_' + regionLabel(S.rOpts))}.hwpx`);
+    const card = await noteCard(sec ? resolve(sec) : null, text);
+    say('#r-mstatus', `산출 완료 (${kb(res.bytes.length)}) · 그래프 포함` + where + card, 'ok');
   } catch (e) {
     say('#r-mstatus', '산출 실패 — ' + e.message, 'err');
   }
@@ -779,8 +930,9 @@ $('#c-make').onclick = async () => {
   say('#c-mstatus', '양식 적용 중…', 'busy');
   try {
     const res = await makeDoc($('#c-draft').value, new Map());
-    download(res.bytes, safeName(S.cName.replace(/\.hwpx$/i, '') + '_양식적용') + '.hwpx');
-    say('#c-mstatus', `산출 완료 (${kb(res.bytes.length)})`, 'ok');
+    const where = await deliver(res.bytes,
+      safeName(S.cName.replace(/\.hwpx$/i, '') + '_양식적용') + '.hwpx');
+    say('#c-mstatus', `산출 완료 (${kb(res.bytes.length)})` + where, 'ok');
   } catch (e) { say('#c-mstatus', '산출 실패 — ' + e.message, 'err'); }
 };
 

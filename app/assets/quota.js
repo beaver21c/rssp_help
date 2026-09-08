@@ -20,17 +20,20 @@ export const TZ = 'America/Los_Angeles';
 const NAME = 'gemini_usage';
 
 /**
- * 무료 등급 한도 참고값.
+ * 무료 등급 한도 참고값 — **판 번호가 아니라 계열로** 잡는다.
  *
- * [검색·스니펫 추정] 구글 공식 문서(ai.google.dev/gemini-api/docs/rate-limits)의 값으로
- * 검색 결과에 나타난 것이며, 이 저장소에서 문서 원문을 직접 열어 확인하지는 못했다.
- * 화면에는 반드시 「참고값」과 출처를 함께 적을 것. 실제 차단 판정에는 쓰지 않는다.
+ * 모델 이름은 자주 바뀐다(2.0 계열 2026-06 종료, 2.5 계열 2026-10 종료 예정). 이름을
+ * 하나하나 적어 두면 새 판이 나올 때마다 표가 비어 버리므로 계열 무늬로 맞춘다.
+ *
+ * [검색·스니펫 추정] 구글 문서(ai.google.dev/gemini-api/docs/rate-limits)에 실린 값으로
+ * 검색 결과에서 확인했으며, 이 작업 환경에서 원문을 직접 열지는 못했다(망 정책).
+ * 화면에는 반드시 「참고값」과 출처를 함께 적을 것. **실제 차단 판정에는 쓰지 않는다.**
  */
-export const FREE_TIER = {
-  'gemini-2.5-flash-lite': { rpm: 15, tpm: 250000, rpd: 1000 },
-  'gemini-2.5-flash': { rpm: 10, tpm: 250000, rpd: 250 },
-  'gemini-2.5-pro': { rpm: 5, tpm: 250000, rpd: 100 },
-};
+export const FREE_TIER = [
+  { family: /flash-lite/i, label: 'Flash-Lite', rpm: 15, tpm: 250000, rpd: 1000 },
+  { family: /flash/i, label: 'Flash', rpm: 10, tpm: 250000, rpd: 250 },
+  { family: /pro/i, label: 'Pro', rpm: 5, tpm: 250000, rpd: 100 },
+];
 
 /** 참고값의 출처. 화면·문서에 그대로 인용한다. */
 export const FREE_TIER_SOURCE = {
@@ -38,6 +41,12 @@ export const FREE_TIER_SOURCE = {
   note: '구글 「Rate limits」 문서 기준 참고값(검색 결과로 확인, 원문 직접 열람은 못 함). '
     + '한도는 구글 공지·계정 등급에 따라 바뀔 수 있다.',
 };
+
+/** 그 이름이 어느 계열인가. 못 찾으면 null. */
+export function familyOf(model) {
+  const n = String(model || '');
+  return FREE_TIER.find((f) => f.family.test(n)) || null;
+}
 
 // ──────────────────────────────────────────────────────────────
 // 저장소 — 막혀 있어도 죽지 않는다
@@ -226,10 +235,10 @@ export function usage(now) {
 export function limitOf(model, now) {
   const key = String(model || '');
   const m = load(now).models[key];
-  if (m && m.limit) return { rpd: m.limit, source: 'observed' };
-  const ref = FREE_TIER[key];
-  if (ref) return { rpd: ref.rpd, rpm: ref.rpm, tpm: ref.tpm, source: 'reference' };
-  return { rpd: 0, source: 'unknown' };
+  if (m && m.limit) return { rpd: m.limit, source: 'observed', label: (familyOf(key) || {}).label || '' };
+  const ref = familyOf(key);
+  if (ref) return { rpd: ref.rpd, rpm: ref.rpm, tpm: ref.tpm, source: 'reference', label: ref.label };
+  return { rpd: 0, source: 'unknown', label: '' };
 }
 
 // ──────────────────────────────────────────────────────────────
