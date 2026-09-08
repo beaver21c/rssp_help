@@ -9,7 +9,7 @@
 "use strict";
 
 import { unzip } from './zip.js';
-import { attr, unescapeXml } from './xml.js';
+import { attr } from './xml.js';
 import { readBodyText } from './docread.js';
 
 export const SUPPORTED = ['hwpx', 'xlsx', 'xlsm', 'csv', 'pptx', 'txt', 'md',
@@ -21,6 +21,12 @@ export const MAX_BYTES = 20 * 1024 * 1024;
 /** 한 파일에서 표로 담을 칸 수 상한. 넘으면 뒤를 잘라 내고 사유를 적는다. */
 export const MAX_CELLS = 40000;
 
+/** 표 한 행이 벌릴 수 있는 칸 수 상한. 망가진 `colspan="5000000"`에 메모리를 다 쓰지 않는다. */
+export const MAX_COLS = 4096;
+
+/** 엑셀이 허용하는 열 수(XFD). 이보다 먼 칸 이름은 망가진 파일이다. */
+const SHEET_COLS = 16384;
+
 const INLINE_MIME = {
   pdf: 'application/pdf',
   png: 'image/png',
@@ -31,6 +37,38 @@ const INLINE_MIME = {
 // ──────────────────────────────────────────────────────────────
 // 공용 도구
 // ──────────────────────────────────────────────────────────────
+const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+const REF_RE = /&(#x?[0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*);/g;
+
+/**
+ * 숫자 문자 참조(`&#10;` `&#x1F600;`)를 글자로. 범위 밖이면 null.
+ * String.fromCodePoint는 유니코드 범위를 넘으면 RangeError를 던진다 —
+ * 망가진 문서 하나에 추출 전체가 뻗으면 안 되니 여기서 걸러 낸다.
+ */
+function charRef(body) {
+  const code = /^#x/i.test(body)
+    ? Number.parseInt(body.slice(2), 16)
+    : Number.parseInt(body.slice(1), 10);
+  if (!Number.isInteger(code) || code < 0 || code > 0x10FFFF) return null;
+  if (code >= 0xD800 && code <= 0xDFFF) return null;      // 짝 없는 서러게이트는 글자가 아니다
+  return String.fromCodePoint(code);
+}
+
+const XML_NAMED = { lt: '<', gt: '>', quot: '"', apos: "'", amp: '&' };
+
+/**
+ * OOXML 글자 되살리기. `xml.js`의 unescapeXml과 달리 숫자 참조도 푼다 —
+ * 엑셀은 셀 안 줄바꿈을 `&#10;`으로 적는다. 한 번만 훑으므로 `&amp;#10;`은
+ * `&#10;` 글자 그대로 남는다(두 번 풀면 없는 줄바꿈이 생긴다).
+ */
+export function unxml(text) {
+  return String(text == null ? '' : text).replace(REF_RE, (whole, body) => {
+    if (hasOwn(XML_NAMED, body)) return XML_NAMED[body];
+    if (body.startsWith('#')) return charRef(body) ?? whole;
+    return whole;
+  });
+}
+
 export function extOf(name) {
   const dot = String(name || '').lastIndexOf('.');
   return dot < 0 ? '' : String(name).slice(dot + 1).toLowerCase();
@@ -142,7 +180,7 @@ function sharedStrings(xml) {
   for (const m of xml.matchAll(/<si(?:\s[^>]*)?(?:\/>|>([\s\S]*?)<\/si>)/g)) {
     const inner = (m[1] || '').replace(/<rPh\b[\s\S]*?<\/rPh>/g, '');   // 후리가나는 본문이 아니다
     let text = '';
-    for (const t of inner.matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)) text += unescapeXml(t[1]);
+    for (const t of inner.matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)) text += unxml(t[1]);
     out.push(text);
   }
   return out;
@@ -152,12 +190,12 @@ function cellValue(attrs, inner, shared) {
   const kind = attr(attrs, 't', 'n');
   if (kind === 'inlineStr') {
     let text = '';
-    for (const t of (inner || '').matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)) text += unescapeXml(t[1]);
+    for (const t of (inner || '').matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)) text += unxml(t[1]);
     return text;
   }
   const v = /<v(?:\s[^>]*)?>([\s\S]*?)<\/v>/.exec(inner || '');
   if (!v) return '';
-  const raw = unescapeXml(v[1]);
+  const raw = unxml(v[1]);
   if (kind === 's') {
     const index = Number.parseInt(raw, 10);
     return Number.isInteger(index) && index >= 0 && index < shared.length ? shared[index] : '';
@@ -177,7 +215,9 @@ export function sheetRows(xml, shared) {
     let auto = 0;
     for (const cm of body.matchAll(/<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
       const at = colIndex(attr(cm[1], 'r'));
-      const index = at >= 0 ? at : auto;
+      //: 엑셀 열 수를 넘는 칸 이름은 망가진 파일이다. 그대로 믿으면 배열 길이가
+      //  수억이 되어 RangeError로 뻗는다. 앞 칸 다음 자리에 놓고 넘어간다.
+      const index = at >= 0 && at < SHEET_COLS ? at : auto;
       auto = index + 1;
       while (cells.length < index) cells.push('');
       cells[index] = cellValue(cm[1], cm[2], shared);
@@ -194,7 +234,7 @@ async function readWorkbook(parts) {
   const rels = new Map();
   for (const m of text('xl/_rels/workbook.xml.rels').matchAll(/<Relationship\b([^>]*)\/>/g)) {
     const id = attr(m[1], 'Id');
-    const target = unescapeXml(attr(m[1], 'Target'));
+    const target = unxml(attr(m[1], 'Target'));
     if (id && target) rels.set(id, resolvePath('xl', target));
   }
 
@@ -202,7 +242,7 @@ async function readWorkbook(parts) {
   for (const m of text('xl/workbook.xml').matchAll(/<sheet\b([^>]*)\/>/g)) {
     const path = rels.get(attr(m[1], 'r:id'));
     if (!path || !parts.has(path)) continue;
-    order.push({ name: unescapeXml(attr(m[1], 'name')) || `시트${order.length + 1}`, path });
+    order.push({ name: unxml(attr(m[1], 'name')) || `시트${order.length + 1}`, path });
   }
   if (!order.length) {
     const names = [...parts.keys()].filter((n) => /^xl\/worksheets\/sheet\d+\.xml$/.test(n))
@@ -229,7 +269,10 @@ async function fromXlsx(bytes) {
   return {
     text: lines.join('\n'),
     tables,
-    note: `엑셀 시트 ${filled.length}개에서 표를 뽑았다`,
+    //: 191개 시트 가운데 14개만 담고서 "191개에서 뽑았다"고 하면 거짓말이 된다
+    note: dropped
+      ? `엑셀 시트 ${filled.length}개 가운데 ${tables.length}개만 표로 담았다(${MAX_CELLS}칸 상한)`
+      : `엑셀 시트 ${filled.length}개에서 표를 뽑았다`,
   };
 }
 
@@ -241,7 +284,7 @@ function slideParagraphs(xml) {
   for (const pm of xml.matchAll(/<a:p(?:\s[^>]*)?(?:\/>|>([\s\S]*?)<\/a:p>)/g)) {
     let line = '';
     for (const piece of (pm[1] || '').matchAll(/<a:t(?:\s[^>]*)?>([\s\S]*?)<\/a:t>|<a:br(?:\s[^>]*)?\/>/g)) {
-      line += piece[1] === undefined ? '\n' : unescapeXml(piece[1]);   // 같은 문단의 런은 이어 붙인다
+      line += piece[1] === undefined ? '\n' : unxml(piece[1]);   // 같은 문단의 런은 이어 붙인다
     }
     const trimmed = line.trim();
     if (trimmed) out.push(trimmed);
@@ -372,10 +415,10 @@ const ENTITIES = {
 };
 
 function decodeEntities(text) {
-  return text.replace(/&(#x?[0-9a-fA-F]+|[a-zA-Z]+);/g, (whole, body) => {
-    if (Object.prototype.hasOwnProperty.call(ENTITIES, body)) return ENTITIES[body];
-    if (/^#x/i.test(body)) return String.fromCodePoint(Number.parseInt(body.slice(2), 16));
-    if (/^#/.test(body)) return String.fromCodePoint(Number.parseInt(body.slice(1), 10));
+  return text.replace(REF_RE, (whole, body) => {
+    if (hasOwn(ENTITIES, body)) return ENTITIES[body];
+    // 범위 밖 숫자 참조(`&#999999999;`)는 글자로 바꿀 수 없다. 원문 그대로 둔다
+    if (body.startsWith('#')) return charRef(body) ?? whole;
     return whole;
   });
 }
@@ -387,6 +430,13 @@ const BLOCK_END = new RegExp(`</(${BLOCK_TAGS.join('|')})\\s*>`, 'gi');
 function tidyText(text) {
   return text.split('\n').map((line) => line.replace(/[ \t ]+/g, ' ').trim())
     .join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/** `colspan` 값 → 벌릴 칸 수. 빈 값·글자·음수·터무니없는 수를 모두 걷어 낸다. */
+function spanOf(raw) {
+  const n = Number.parseInt(raw || '1', 10);
+  if (!Number.isFinite(n) || n < 1) return 1;
+  return Math.min(n, MAX_COLS);
 }
 
 /** DOMParser가 없는 자리(Node 시험)에서 쓰는 정규식 갈래. */
@@ -401,9 +451,11 @@ export function htmlByRegex(source) {
     for (const rm of block.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr\s*>/gi)) {
       const cells = [];
       for (const cm of rm[1].matchAll(/<(td|th)\b([^>]*)>([\s\S]*?)<\/\1\s*>/gi)) {
-        const span = Math.max(1, Number.parseInt(attr(cm[2], 'colspan') || '1', 10) || 1);
+        if (cells.length >= MAX_COLS) break;
+        const span = spanOf(attr(cm[2], 'colspan'));
         cells.push(tidyText(decodeEntities(cm[3].replace(/<[^>]+>/g, ' '))).replace(/\n+/g, ' '));
-        for (let k = 1; k < span; k += 1) cells.push('');       // 합친 칸만큼 자리를 벌린다
+        // 합친 칸만큼 자리를 벌린다. 망가진 colspan은 MAX_COLS에서 끊는다
+        for (let k = 1; k < span && cells.length < MAX_COLS; k += 1) cells.push('');
       }
       if (cells.length) rows.push(cells);
     }
@@ -424,21 +476,24 @@ function htmlByDom(source) {
   doc.querySelectorAll('script, style, noscript').forEach((node) => node.remove());
 
   const tables = [];
-  doc.querySelectorAll('table').forEach((node) => {
+  for (const node of doc.querySelectorAll('table')) {
+    //: 표 안의 표는 바깥 표를 담을 때 이미 걷혔다. 두 번 담지 않는다.
+    if (!doc.contains(node)) continue;
     const rows = [];
-    node.querySelectorAll('tr').forEach((tr) => {
+    for (const tr of node.querySelectorAll('tr')) {
       const cells = [];
-      tr.querySelectorAll('td, th').forEach((td) => {
-        const span = Math.max(1, Number.parseInt(td.getAttribute('colspan') || '1', 10) || 1);
+      for (const td of tr.querySelectorAll('td, th')) {
+        if (cells.length >= MAX_COLS) break;
+        const span = spanOf(td.getAttribute('colspan'));
         cells.push(tidyText(td.textContent || '').replace(/\n+/g, ' '));
-        for (let k = 1; k < span; k += 1) cells.push('');
-      });
+        for (let k = 1; k < span && cells.length < MAX_COLS; k += 1) cells.push('');
+      }
       if (cells.length) rows.push(cells);
-    });
+    }
     const table = squareUp(rows);
     if (table.length) tables.push(table);
     node.remove();                                              // 표는 tables로만 담는다
-  });
+  }
 
   const walk = (node) => {
     let out = '';

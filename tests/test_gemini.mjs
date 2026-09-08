@@ -369,6 +369,80 @@ const deps = (fetchImpl, sleep) => ({ fetchImpl, sleep });
   check('11 실패 사유가 담긴다', bad.error.includes('API key not valid'), bad.error);
 }
 
+// ──────────────────────────────────────────────────────────────
+// 12) 경계 — 검증에서 나온 구멍을 막은 자리
+// ──────────────────────────────────────────────────────────────
+{
+  // 12-1 200인데 본문이 JSON이 아니면(프록시 안내 쪽·잘린 응답) 폴백이 끊기면 안 된다
+  clearModelCache();
+  const f = fakeFetch((c) => (c.model
+    ? { ok: true, status: 200, json: async () => { throw new SyntaxError('Unexpected token <'); } }
+    : modelsRes(['gemini-2.5-flash', 'gemini-2.0-flash'])));
+  const e = await throws('12 깨진 200이면 다음 모델까지 가고 한국어로 던진다',
+    () => generate({ prompt: 'x', key: KEY }, deps(f, fakeSleep())),
+    (x) => x.message.includes('JSON으로 읽지 못했다') && !(x instanceof SyntaxError));
+  eq('12 깨진 200에도 모델 둘 다 시도', f.gen().length, 2);
+  check('12 오류에 모델 이름이 담긴다', e && e.message.startsWith('gemini-2.0-flash'), e && e.message);
+
+  // 12-2 200인데 알맹이가 없으면 성공으로 치지 않는다(빈 원고를 "완료"로 넘기던 자리)
+  clearModelCache();
+  const g = fakeFetch((c) => (c.model
+    ? okRes({ promptFeedback: { blockReason: 'SAFETY' } })
+    : modelsRes(['gemini-2.5-flash', 'gemini-2.0-flash'])));
+  const e2 = await throws('12 빈 응답은 실패로 친다',
+    () => generate({ prompt: 'x', key: KEY }, deps(g, fakeSleep())),
+    (x) => x.message.includes('빈 응답'));
+  check('12 빈 응답 사유가 담긴다', e2 && e2.message.includes('SAFETY'), e2 && e2.message);
+  eq('12 빈 응답이면 다음 모델도 본다', g.gen().length, 2);
+
+  // 12-3 마지막 모델이 429면 헛기다림을 하지 않는다
+  clearModelCache();
+  const h = fakeFetch((c) => (c.model ? errRes(429, 'Resource exhausted')
+    : modelsRes(['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'])));
+  const s = fakeSleep();
+  await throws('12 전부 429면 던진다', () => generate({ prompt: 'x', key: KEY }, deps(h, s)));
+  eq('12 모델 셋 중 대기는 둘', s.waits.length, 2);
+
+  // 12-4 주소를 비틀 수 있는 모델 이름은 목록에서 물리친다(키가 쿼리스트링으로 새는 길)
+  clearModelCache();
+  const bad = fakeFetch(() => okRes({
+    models: [{ name: 'models/gemini 2.5/../evil?key=LEAK', supportedGenerationMethods: ['generateContent'] }],
+  }));
+  eq('12 못 쓰는 이름은 걸러지고 기본값으로 간다',
+    (await listModels(KEY, deps(bad))).join(','), FALLBACK_MODELS.join(','));
+  eq('12 orderModels도 같은 이름을 물리친다',
+    orderModels(['gemini-2.5-flash', 'a/b', 'c?d=1', 'e f']).join(','), 'gemini-2.5-flash');
+  await throws('12 model로 직접 넣어도 물리친다',
+    () => generate({ prompt: 'x', key: KEY, model: '../evil?key=LEAK' },
+      deps(fakeFetch(() => okRes({})), fakeSleep())),
+    (x) => x.message.includes('못 쓰는 글자'));
+
+  // 12-5 같은 키로 동시에 물으면 그물은 한 번만 탄다
+  clearModelCache();
+  const c1 = fakeFetch(() => modelsRes(['gemini-2.5-flash']));
+  const three = await Promise.all([
+    listModels(KEY, deps(c1)), listModels(KEY, deps(c1)), listModels(KEY, deps(c1)),
+  ]);
+  eq('12 동시 세 번이어도 목록 호출은 한 번', c1.calls.length, 1);
+  eq('12 셋 다 같은 답', three.every((m) => m.join(',') === 'gemini-2.5-flash'), true);
+  // 실패하면 캐시에 남지 않아 다음 호출이 다시 시도한다
+  clearModelCache();
+  const c2 = fakeFetch(() => errRes(500, '잠깐 죽었다'));
+  await throws('12 목록 실패', () => listModels(KEY, deps(c2)));
+  await throws('12 실패 뒤 재시도', () => listModels(KEY, deps(c2)));
+  eq('12 실패는 캐시하지 않는다', c2.calls.length, 2);
+
+  // 12-6 이상한 입력에도 한국어 오류를 낸다(날 TypeError 금지)
+  await throws('12 files가 배열이 아니면 한국어 오류',
+    async () => buildBody({ prompt: 'p', files: { mimeType: 'a', data: 'b' } }),
+    (x) => !(x instanceof TypeError) && x.message.includes('배열'));
+  clearModelCache();
+  const w = fakeFetch(() => okRes({ models: '배열이 아니다' }));
+  eq('12 목록이 배열이 아니면 기본값',
+    (await listModels(KEY, deps(w))).join(','), FALLBACK_MODELS.join(','));
+  eq('12 temperature 0도 지켜진다', buildBody({ prompt: 'p', temperature: 0 }).generationConfig.temperature, 0);
+}
+
 console.log(`통과 ${passed} / 실패 ${failed}`);
 if (failed) {
   console.error(`시험 실패 — 위 ${failed}건을 고칠 것.`);

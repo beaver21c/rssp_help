@@ -43,31 +43,65 @@ const near = (a, b) => a == null && b == null ? true
 head('기존 대시보드와 수치 대조');
 const require_ = createRequire(import.meta.url);
 let ref = null;
-try { ref = require_(REF); } catch (e) { ok(false, '대시보드 app.js 를 읽었다', e.message); }
+try { ref = require_(REF); } catch (e) { ref = null; console.log(`  참고 — 대시보드 원본을 찾지 못했다(${REF}). 붙박이 기준값으로 대조한다`); }
+
+/* 붙박이 기준값 — 대시보드 quantile/mean/fmt 가 실제로 낸 값을 그대로 적어 두었다.
+   옆 저장소(kihasa-indicator-new)가 없는 곳(CI 등)에서도 수치 계약은 그대로 지킨다 */
+const SAMPLES = [
+  [1, 2, 3, 4],
+  [0.5, 1.25, 3.5, 7, 9, 11.5],
+  [-4, -1, 0, 2, 8, 13, 21],
+  [5],
+  [2, 2, 2, 2, 2],
+];
+const PS = [0, 0.05, 0.25, 0.3333, 0.5, 0.75, 0.9, 1];
+const GOLD_Q = [
+  [1, 1.15, 1.75, 1.9999, 2.5, 3.25, 3.7, 4],
+  [0.5, 0.6875, 1.8125, 2.749625, 5.25, 8.5, 10.25, 11.5],
+  [-4, -3.0999999999999996, -0.5, -0.00019999999999997797, 2, 10.5, 16.200000000000003, 21],
+  [5, 5, 5, 5, 5, 5, 5, 5],
+  [2, 2, 2, 2, 2, 2, 2, 2],
+];
+const GOLD_MEAN = [2.5, 5.458333333333333, 5.571428571428571, 5, 2];
+const FMT_IN = [0.123456, 12.5, 250.4, 1234.5, 3.4e8, 5.1e12];
+const GOLD_FMT = ['0.12 %', '12.5 %', '250.4 %', '1,234.5 %', '3.4억 %', '5.1조 %'];
+{
+  let bad = null;
+  SAMPLES.forEach((s, si) => PS.forEach((p, pi) => {
+    if (!bad && !near(quantile(s, p), GOLD_Q[si][pi])) {
+      bad = `n=${s.length} p=${p} → 우리 ${quantile(s, p)} / 기준 ${GOLD_Q[si][pi]}`;
+    }
+  }));
+  ok(!bad, `quantile()이 붙박이 기준값과 같다(표본 ${SAMPLES.length}개 × 분위 ${PS.length}개)`, bad);
+  ok(SAMPLES.every((s, i) => near(mean(s), GOLD_MEAN[i])), 'mean()이 붙박이 기준값과 같다');
+  ok(FMT_IN.every((v, i) => fmt(v, '%') === GOLD_FMT[i]), 'fmt()가 붙박이 기준값과 같다',
+    FMT_IN.map((v) => fmt(v, '%')).join(' / '));
+  ok(quantile([], 0.5) === null, '빈 배열이면 quantile()은 null');
+}
 
 if (ref) {
-  const samples = [
-    [1, 2, 3, 4],
-    [0.5, 1.25, 3.5, 7, 9, 11.5],
-    [-4, -1, 0, 2, 8, 13, 21],
-    [5],
-    [2, 2, 2, 2, 2],
+  /* 옆 저장소가 있으면 붙박이 기준값이 아직 원본과 같은지까지 확인한다 */
+  const samples = SAMPLES.concat([
     Array.from({ length: 229 }, (_, i) => Math.sin(i) * 100 + i * 0.37).sort((a, b) => a - b),
-  ];
-  const ps = [0, 0.05, 0.25, 0.3333, 0.5, 0.75, 0.9, 1];
+  ]);
   let bad = null;
   for (const s of samples) {
-    for (const p of ps) {
+    for (const p of PS) {
       const a = quantile(s, p), b = ref.quantile(s, p);
       if (!near(a, b)) { bad = `n=${s.length} p=${p} → 우리 ${a} / 대시보드 ${b}`; break; }
     }
     if (bad) break;
   }
-  ok(!bad, `quantile()이 대시보드와 같다(표본 ${samples.length}개 × 분위 ${ps.length}개)`, bad);
-  ok(quantile([], 0.5) === null && ref.quantile([], 0.5) === null, '빈 배열이면 둘 다 null');
+  ok(!bad, `quantile()이 대시보드 원본과 같다(표본 ${samples.length}개 × 분위 ${PS.length}개)`, bad);
+  ok(SAMPLES.every((s, i) => near(ref.quantile(s, 0.25), GOLD_Q[i][2]))
+    && SAMPLES.every((s, i) => near(ref.mean(s), GOLD_MEAN[i]))
+    && FMT_IN.every((v, i) => ref.fmt(v, '%') === GOLD_FMT[i]),
+  '붙박이 기준값이 대시보드 원본과 아직 같다');
+  ok(ref.quantile([], 0.5) === null, '빈 배열이면 대시보드도 null');
   ok(samples.every((s) => near(mean(s), ref.mean(s))), 'mean()이 대시보드와 같다');
-  ok([0.123456, 12.5, 250.4, 1234.5, 3.4e8, 5.1e12].every((v) => fmt(v, '%') === ref.fmt(v, '%')),
-    'fmt()가 대시보드와 같다');
+  ok(FMT_IN.every((v) => fmt(v, '%') === ref.fmt(v, '%')), 'fmt()가 대시보드와 같다');
+} else {
+  console.log('  건너뜀 — 대시보드 원본 대조는 하지 않았다(옆 저장소가 없다). 붙박이 기준값 대조는 위에서 마쳤다');
 }
 
 /* boxStats 도 원본 정의대로인지 직접 확인 */
@@ -212,6 +246,42 @@ const NOTE2 = '값은 지표별 최신연도 기준이며, 평균은 시·군·�
   let threw = '';
   try { narrate([], {}); } catch (e) { threw = e.message; }
   ok(threw.length > 0, '결과가 없으면 조용히 넘기지 않고 오류를 던진다', threw);
+
+  /* 화면의 '고른 지표' 경로 — 지표를 조금만 고르면 위·아래 목록이 겹치기 쉽다.
+     같은 지표를 '값이 큰 쪽'과 '작은 쪽'에 함께 올리면 원고가 스스로 어긋난다 */
+  let dup = null;
+  for (const k of [1, 2, 3, 4, 5, 6, 7]) {
+    const few = await analyze({ region: '41110', basis: '광역', codes: KEY_CODES.slice(0, k), year: null });
+    const t2 = narrate(few, { region: '41110', basis: '광역', regions, catalog });
+    const hi = (t2.split('○ 비교집단에서 값이 작은 쪽')[0].match(/\n- (.+?) [\d,.–]/g) || []);
+    const lo = (t2.split('○ 비교집단에서 값이 작은 쪽')[1] || '').split('○ 해석')[0]
+      .match(/\n- (.+?) [\d,.–]/g) || [];
+    const both = hi.filter((s) => lo.includes(s));
+    if (both.length) { dup = `지표 ${k}개일 때 ${both.length}개가 양쪽에 겹친다: ${both[0].trim()}`; break; }
+  }
+  ok(!dup, '지표 수가 적어도 큰 쪽·작은 쪽 목록이 겹치지 않는다', dup);
+
+  /* 비교 기준이 '유형'이면 유형 평균을 따로 적지 않으므로 머리말도 그렇게 말해야 한다 */
+  const tRows = await analyze({ region: '41110', basis: '유형', codes: KEY_CODES, year: null });
+  const tTxt = narrate(tRows, { region: '41110', basis: '유형', regions, catalog });
+  ok(!/같은 유형 평균을 함께 적었다/.test(tTxt) && !/같은 유형 \d+곳 평균/.test(tTxt)
+    && /비교집단이 곧 같은 유형/.test(tTxt),
+  '유형 비교일 때 머리말이 본문과 어긋나지 않는다',
+  tTxt.split('\n').filter((l) => /유형/.test(l)).join(' / '));
+}
+
+/* 연도를 숫자가 아닌 값으로 주면 조용히 빈 값을 내지 말고 막아야 한다 */
+{
+  let threw = '';
+  try { await analyze({ region: '11110', basis: '전국', codes: ['A1'], year: '올해' }); }
+  catch (e) { threw = e.message; }
+  ok(/연도/.test(threw), '연도가 숫자가 아니면 한국어 사유로 막는다', threw || '조용히 통과했다');
+  const y = await analyze({ region: '11110', basis: '전국', codes: ['A1'], year: 2020 });
+  ok(y[0].year === 2020 && y[0].n > 200, '숫자 연도는 그대로 받는다', JSON.stringify(y[0] || {}));
+  /* 화면 <select> 값처럼 숫자 꼴 문자열은 숫자로 바꿔 받는다(빈 값으로 새지 않게) */
+  const ys = await analyze({ region: '11110', basis: '전국', codes: ['A1'], year: '2020' });
+  ok(ys[0].year === 2020 && ys[0].n === y[0].n && ys[0].mine === y[0].mine,
+    "숫자 꼴 문자열 연도('2020')도 같은 결과를 낸다", JSON.stringify(ys[0] || {}));
 }
 
 /* ───────── 6. 차트 배치 ───────── */
@@ -299,6 +369,45 @@ const chartRows = await analyze({ region: '41110', basis: '광역', codes: KEY_C
   ok(threw.length > 0, '행이 없으면 오류를 던진다', threw);
 
   ok(textWidth('가나다', 10) > textWidth('abc', 10), '한글 폭을 영문보다 넓게 잡는다');
+
+  /* 값이 유한한 수가 아니면 좌표가 NaN 이 되어 그림이 통째로 깨진다 */
+  const nanRow = { code: 'X2', name: 'NaN 지표', unit: '%', year: 2025, mine: NaN, avg: NaN,
+    q1: NaN, q3: NaN, min: NaN, max: Infinity, n: 9, rank: 1, peerType: null, nation: { avg: null, n: 0 } };
+  const nanLay = layoutChart([nanRow], { title: '시험' });
+  const nanBad = nanLay.ops.filter((it) => ['x', 'y', 'x0', 'x1', 'y0', 'y1', 'w', 'h', 'r']
+    .some((k) => it[k] != null && !Number.isFinite(it[k])));
+  ok(nanBad.length === 0 && nanLay.rows[0].has === false,
+    '유한하지 않은 값이 섞여도 NaN 좌표를 만들지 않는다', JSON.stringify(nanBad[0] || {}));
+
+  /* 너비를 너무 좁게 주면 범례가 그림 밖으로 밀린다 — 말없이 망가뜨리지 말 것 */
+  let wThrew = '';
+  try { layoutChart([R2()], { width: 100 }); } catch (e) { wThrew = e.message; }
+  ok(/너비/.test(wThrew), '너비가 너무 좁으면 한국어 사유로 막는다', wThrew || '조용히 통과했다');
+  const narrow = layoutChart(chartRows, { width: 560, title: '좁은 그림', basis: '광역' });
+  let nBad = null;
+  for (const it of narrow.ops) {
+    if (it.op !== 'text') continue;
+    const b = textBox(it);
+    if (b.x0 < -0.5 || b.x1 > narrow.width + 0.5) { nBad = `"${it.text}" ${b.x0.toFixed(1)}~${b.x1.toFixed(1)}`; break; }
+  }
+  ok(!nBad, '가장 좁은 너비(560)에서도 글자가 그림 밖으로 나가지 않는다', nBad);
+}
+
+function R2() {
+  return { code: 'X3', name: '시험 지표', unit: '%', year: 2025, mine: 5, avg: 5, q1: 4, q3: 6,
+    min: 1, max: 9, n: 10, rank: 3, peerType: null, nation: { avg: 5, n: 10 } };
+}
+
+/* 계열 읽기가 한 번 어긋나도 캐시에 남아 그 지표를 영영 못 읽게 되면 안 된다 */
+{
+  let threw1 = '';
+  try { await loadSeries('없는코드ZZ'); } catch (e) { threw1 = e.message; }
+  let threw2 = '';
+  try { await loadSeries('없는코드ZZ'); } catch (e) { threw2 = e.message; }
+  ok(threw1.length > 0 && threw1 === threw2, '없는 계열은 부를 때마다 같은 사유로 막는다', `${threw1} / ${threw2}`);
+  const again = await loadSeries('A1');
+  ok(again && Array.isArray(again.years) && again.years.length > 0,
+    '한 번 어긋난 뒤에도 정상 계열은 그대로 읽힌다');
 }
 
 /* ───────── 7. 실제 렌더(있을 때만) ───────── */

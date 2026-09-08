@@ -108,10 +108,12 @@ export async function loadIndex() {
 /* 지표 하나의 시계열. 없는 코드는 null을 주지 않고 오류를 던진다 */
 export async function loadSeries(code) {
   if (_cache.series.has(code)) return _cache.series.get(code);
+  /* 실패한 약속을 캐시에 남기면 한 번 끊긴 뒤로는 그 지표를 영영 못 읽는다.
+     어긋나면 캐시에서 빼서 다음 호출이 다시 시도하게 둔다 */
   const p = readJSON(`series/${code}.json`).then((sr) => {
     if (!sr || !Array.isArray(sr.years) || !sr.values) throw new Error(`${code} 계열 모양이 계약과 다르다`);
     return sr;
-  });
+  }).catch((e) => { _cache.series.delete(code); throw e; });
   _cache.series.set(code, p);
   return p;
 }
@@ -162,6 +164,14 @@ export async function analyze(opts) {
     throw new Error(`${regionName(regions, region.code)}은(는) 시·군·구 유형이 없어 유형별 비교를 쓸 수 없다`);
   }
 
+  /* 연도는 숫자나 null 만 받는다. 화면 <select> 값처럼 문자열이 들어오면
+     indexOf 가 어긋나 모든 줄이 조용히 빈 값이 되므로 여기서 걸러 낸다 */
+  let want = o.year;
+  if (want != null) {
+    want = Number(want);
+    if (!Number.isFinite(want)) throw new Error(`연도 ${o.year} 을(를) 숫자로 읽지 못했다`);
+  }
+
   const codes = (o.codes && o.codes.length) ? o.codes.slice() : KEY_CODES.slice();
   const grp = groupCodes(regions, basis, region.code);
   if (!grp.length) throw new Error('비교집단이 비어 있다');
@@ -177,7 +187,7 @@ export async function analyze(opts) {
   const rows = [];
   for (const { code, sr } of okOnes) {
     const it = itemOf(code);
-    const year = (o.year == null) ? latestYearOf(sr, grp) : o.year;
+    const year = (want == null) ? latestYearOf(sr, grp) : want;
     const vals = grp.map((c) => valAt(sr, c, year)).filter((v) => v != null).sort((a, b) => a - b);
     const st = boxStats(vals);
     const mine = valAt(sr, region.code, year);
@@ -248,8 +258,12 @@ export function narrate(rows, opts) {
 
   const scored = rows.filter((r) => r.mine != null && r.rank != null && r.n >= 5);
   const byPct = scored.slice().sort((a, b) => pctOf(a) - pctOf(b));
-  const high = byPct.slice(0, topN);
-  const low = byPct.slice(-topN).reverse();
+  /* 지표 수가 적으면 위·아래 목록이 겹쳐 같은 지표를 '큰 쪽'과 '작은 쪽'에 함께 올리게 된다.
+     겹치지 않게 반씩 갈라 준다 */
+  let nHigh = topN, nLow = topN;
+  if (byPct.length < topN * 2) { nHigh = Math.ceil(byPct.length / 2); nLow = byPct.length - nHigh; }
+  const high = byPct.slice(0, nHigh);
+  const low = nLow ? byPct.slice(byPct.length - nLow).reverse() : [];
 
   const ns = rows.map((r) => r.n).filter((n) => n > 0);
   const nMin = ns.length ? Math.min(...ns) : 0;
@@ -271,7 +285,12 @@ export function narrate(rows, opts) {
     L.push(`- ${rName}${eun(rName)} 시·군·구 7유형 구분에 들어가 있지 않아 유형별 비교는 넣지 않았다`);
   } else if (reg && catalog) {
     const tl = typeLabel(catalog, reg.type7);
-    if (tl) L.push(`- ${rName}의 시·군·구 유형은 ${tl}이고, 같은 유형 평균을 함께 적었다`);
+    /* 비교 기준이 이미 '유형'이면 유형 평균을 따로 적지 않는다. 머리말도 그에 맞춘다 */
+    if (tl) {
+      L.push(basis === '유형'
+        ? `- ${rName}의 시·군·구 유형은 ${tl}이고, 비교집단이 곧 같은 유형 시·군·구다`
+        : `- ${rName}의 시·군·구 유형은 ${tl}이고, 같은 유형 평균을 함께 적었다`);
+    }
   }
   if (noVal.length) {
     L.push(`- 값이 비어 있는 지표 ${noVal.length}개(${noVal.slice(0, 3).map((r) => r.name).join(', ')}` +
@@ -302,8 +321,8 @@ export function narrate(rows, opts) {
     L.push('');
   };
 
-  bullets(high, `비교집단에서 값이 큰 쪽 지표 ${topN}개`, 'high');
-  bullets(low, `비교집단에서 값이 작은 쪽 지표 ${topN}개`, 'low');
+  bullets(high, `비교집단에서 값이 큰 쪽 지표${high.length ? ` ${high.length}개` : ''}`, 'high');
+  bullets(low, `비교집단에서 값이 작은 쪽 지표${low.length ? ` ${low.length}개` : ''}`, 'low');
 
   L.push('○ 해석 시 유의점');
   L.push('- 값이 높다고 곧 여건이 좋은 것은 아니다. 지표마다 방향이 달라 개별 지표의 의미를 확인하고 읽는다');

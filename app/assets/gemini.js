@@ -22,6 +22,13 @@ export const FALLBACK_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-
 /** 이름만 보고 걸러 내는 모델. 실험·미리보기·음성·그림·임베딩 계열은 원고 생성에 안 맞는다. */
 const SKIP_RE = /exp|experimental|preview|tts|image|embed|live|audio|thinking/i;
 
+/**
+ * 모델 이름에 허용하는 글자. 이름은 주소에 그대로 끼워 넣는 값이라
+ * `/`·`?`·`&`·공백이 섞이면 경로나 쿼리스트링이 뒤틀린다(키가 주소로 새는 길이 열린다).
+ * 실제 모델 이름은 전부 영숫자·점·밑줄·붙임표뿐이니 그 밖은 이름부터 물리친다.
+ */
+const SAFE_MODEL = /^[A-Za-z0-9._-]+$/;
+
 const KEY_NAME = 'gemini_key';
 
 // ──────────────────────────────────────────────────────────────
@@ -151,19 +158,35 @@ const byRank = (a, b) => {
 
 /** 이름 목록을 계약대로 걸러 내고 정렬한다. 순수 함수라 시험에서 바로 부를 수 있다. */
 export function orderModels(names) {
-  const all = (names || [])
+  const all = (Array.isArray(names) ? names : [])
     .map((n) => String(n || '').replace(/^models\//, ''))
-    .filter((n) => n && !SKIP_RE.test(n));
+    .filter((n) => n && SAFE_MODEL.test(n) && !SKIP_RE.test(n));
   const flash = all.filter((n) => n.includes('flash')).sort(byRank);
   const rest = all.filter((n) => !n.includes('flash'));
   return [...flash, ...rest];
 }
 
 let modelCache = null;   // { key, models }
+let inflight = null;     // { key, promise } — 같은 키로 동시에 물으면 그물은 한 번만 탄다
 
 /** 모델 목록 캐시를 버린다. 키를 바꾸면 자동으로 불린다. */
 export function clearModelCache() {
   modelCache = null;
+  inflight = null;
+}
+
+async function fetchModels(k, deps) {
+  const doFetch = pickFetch(deps);
+  const r = await doFetch(`${BASE}/models?pageSize=1000`, { headers: authHeader(k) });
+  if (!r.ok) throw await httpError(r);
+  const j = await readJson(r, '모델 목록');
+  const listed = Array.isArray(j && j.models) ? j.models : [];
+  const usable = listed
+    .filter((m) => (Array.isArray(m && m.supportedGenerationMethods)
+      ? m.supportedGenerationMethods : []).includes('generateContent'))
+    .map((m) => m.name);
+  const models = orderModels(usable);
+  return models.length ? models : [...FALLBACK_MODELS];
 }
 
 /**
@@ -173,17 +196,20 @@ export function clearModelCache() {
 export async function listModels(key, deps) {
   const k = needKey(key);
   if (modelCache && modelCache.key === k) return modelCache.models;
-  const doFetch = pickFetch(deps);
-  const r = await doFetch(`${BASE}/models?pageSize=1000`, { headers: authHeader(k) });
-  if (!r.ok) throw await httpError(r);
-  const j = await r.json();
-  const usable = (j.models || [])
-    .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
-    .map((m) => m.name);
-  let models = orderModels(usable);
-  if (!models.length) models = [...FALLBACK_MODELS];
-  modelCache = { key: k, models };
-  return models;
+  if (inflight && inflight.key === k) return inflight.promise;
+  const promise = fetchModels(k, deps).then(
+    (models) => {
+      modelCache = { key: k, models };
+      if (inflight && inflight.promise === promise) inflight = null;
+      return models;
+    },
+    (e) => {
+      if (inflight && inflight.promise === promise) inflight = null;
+      throw e;
+    },
+  );
+  inflight = { key: k, promise };
+  return promise;
 }
 
 /** 응답 본문에서 구글이 준 사유를 캐낸다. 못 캐면 상태 코드만 남긴다. */
@@ -201,11 +227,32 @@ async function httpError(r) {
 /** 키 자체가 잘못된 경우인가. 이러면 다른 모델로 넘어가 봐야 똑같이 막힌다. */
 const isKeyFault = (msg) => /api key|permission|expired/i.test(String(msg || ''));
 
+/**
+ * 200이어도 본문이 JSON이 아닐 수 있다(프록시가 끼워 넣은 안내 쪽, 잘린 응답).
+ * 날 SyntaxError를 그대로 흘리면 폴백 고리가 통째로 끊기니 한국어 사유로 바꿔 준다.
+ */
+async function readJson(r, what) {
+  try {
+    return await r.json();
+  } catch (e) {
+    throw new Error(`${what} 응답을 JSON으로 읽지 못했다.`);
+  }
+}
+
+/** 빈 응답이 왔을 때 구글이 남긴 사유(안전 차단·길이 초과 등)를 캐낸다. */
+function emptyReason(j) {
+  const c = j && j.candidates && j.candidates[0];
+  return (j && j.promptFeedback && j.promptFeedback.blockReason)
+    || (c && c.finishReason) || '';
+}
+
 // ──────────────────────────────────────────────────────────────
 // 요청 본문
 // ──────────────────────────────────────────────────────────────
 function fileParts(files) {
-  return (files || []).map((f, i) => {
+  if (files == null) return [];
+  if (!Array.isArray(files)) throw new Error('첨부 목록(files)은 배열이어야 한다.');
+  return files.map((f, i) => {
     const mime = f && (f.mimeType || f.mime_type);
     const data = f && f.data;
     if (!mime || !data) throw new Error(`첨부 ${i + 1}번에 mimeType이나 data가 없다.`);
@@ -220,8 +267,8 @@ function fileParts(files) {
 export function buildBody(opts, useSchema) {
   const o = opts || {};
   const prompt = String(o.prompt == null ? '' : o.prompt);
-  if (!prompt.trim() && !(o.files || []).length) throw new Error('보낼 프롬프트가 비었다.');
   const parts = [{ text: prompt }, ...fileParts(o.files)];
+  if (!prompt.trim() && parts.length < 2) throw new Error('보낼 프롬프트가 비었다.');
   const body = { contents: [{ role: 'user', parts }] };
   if (o.system) body.systemInstruction = { parts: [{ text: String(o.system) }] };
   const gen = { temperature: typeof o.temperature === 'number' ? o.temperature : 0.3 };
@@ -262,11 +309,20 @@ export async function generate(opts, deps) {
   const key = needKey(o.key);
   const doFetch = pickFetch(deps);
   const sleep = pickSleep(deps);
-  const models = o.model ? [o.model] : await listModels(key, deps);
+  let models;
+  if (o.model) {
+    const one = String(o.model).replace(/^models\//, '');
+    if (!SAFE_MODEL.test(one)) throw new Error(`모델 이름에 못 쓰는 글자가 있다: ${one}`);
+    models = [one];
+  } else {
+    models = await listModels(key, deps);
+  }
   const headers = { 'Content-Type': 'application/json', ...authHeader(key) };
   let last = null;
 
-  for (const model of models) {
+  for (let i = 0; i < models.length; i += 1) {
+    const model = models[i];
+    const isLast = i === models.length - 1;
     // 응답 스키마를 안 받아 주는 구형 모델이 있어 400이면 스키마를 빼고 한 번 더 본다.
     const passes = (o.json && o.schema) ? [true, false] : [false];
     for (const useSchema of passes) {
@@ -280,12 +336,25 @@ export async function generate(opts, deps) {
         break;
       }
       if (r.ok) {
-        const j = await r.json();
-        return { model, text: answerText(j) };
+        let j;
+        try {
+          j = await readJson(r, model);
+        } catch (e) {
+          last = e;             // 본문이 깨졌으면 이 모델은 접고 다음으로
+          break;
+        }
+        const text = answerText(j);
+        if (text) return { model, text };
+        // 200이어도 알맹이가 없으면 실패로 친다. 빈 원고를 성공이라고 넘기면
+        // 화면에는 "완료"가 뜨고 상자만 비는 꼴이 된다.
+        const why = emptyReason(j);
+        last = new Error(`${model}이 빈 응답을 냈다${why ? ` (${why})` : ''}.`);
+        break;
       }
       last = await httpError(r);
       if (isKeyFault(last.message)) throw Object.assign(last, { fatal: true });
-      if (last.status === 429) { await sleep(RETRY_MS); break; }
+      // 429는 잠깐 쉬었다 다음 모델로. 마지막 모델이면 쉬어 봐야 헛기다림이다.
+      if (last.status === 429) { if (!isLast) await sleep(RETRY_MS); break; }
       if (last.status === 400 && useSchema) continue;
       break;                    // 404 등 — 다음 모델
     }
