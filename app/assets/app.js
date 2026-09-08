@@ -360,8 +360,20 @@ function fillRegionSelects() {
   s1.onchange = () => {
     const s2 = $('#r-sgg'); s2.innerHTML = '';
     sgg.filter((r) => r.sido === s1.value).forEach((r) => s2.add(new Option(r.sigungu, r.code)));
+    syncBasis();
   };
+  $('#r-sgg').onchange = syncBasis;
   s1.onchange();
+
+  /* 7대 유형이 없는 지역(대구 군위군)은 유형별 비교를 고를 수 없게 막는다 */
+  function syncBasis() {
+    const r = S.regions.find((x) => x.code === $('#r-sgg').value);
+    const opt = $('#r-basis').querySelector('option[value="유형"]');
+    const none = !r || r.type7 == null;
+    opt.disabled = none;
+    opt.textContent = none ? '유사지역(7대 유형) — 이 지역은 유형 미부여' : '유사지역(시·군·구 7대 유형)';
+    if (none && $('#r-basis').value === '유형') $('#r-basis').value = '광역';
+  }
 
   const pick = $('#r-pick'); pick.innerHTML = '';
   S.indexCat.items.forEach((i) => pick.add(new Option(`[${i.code}] ${i.name}`, i.code)));
@@ -415,6 +427,24 @@ $('#r-run').onclick = async () => {
   btn.disabled = false;
 };
 
+/* 그림을 넣을 자리를 고른다.
+   표 주(※)는 표 바로 아래에만 두는 줄이라, 그림 바로 뒤에 ※가 오면 검사에 걸린다.
+   그래서 첫 표 앞(표가 없으면 첫 ※ 앞)에 넣고, 그마저 없으면 맨 끝에 붙인다. */
+function insertImage(text, name) {
+  const lines = text.split('\n');
+  let at = lines.length;
+  for (let i = 0; i < lines.length; i++) {
+    const s = lines[i].trim();
+    if (s.startsWith('|') || s.startsWith('{cols=') || s.startsWith('※')) {
+      at = i;
+      while (at > 0 && !lines[at - 1].trim()) at--;      // 앞의 빈 줄 위로
+      break;
+    }
+  }
+  lines.splice(at, 0, '', `![](${name})`, '');
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n');
+}
+
 function regionLabel(opts) {
   const r = S.regions.find((x) => x.code === opts.region);
   return r ? `${r.sido} ${r.sigungu}` : opts.region;
@@ -454,12 +484,7 @@ $('#r-make').onclick = async () => {
   try {
     const IMG = 'indicator.png';
     let text = $('#r-draft').value;
-    if (!text.includes(`![](${IMG})`)) {
-      const lines = text.split('\n');
-      const at = Math.min(3, lines.length);
-      lines.splice(at, 0, '', `![](${IMG})`, '');
-      text = lines.join('\n');
-    }
+    if (!text.includes(`![](${IMG})`)) text = insertImage(text, IMG);
     const images = new Map([[IMG, S.rPng]]);
     const res = await buildForm(S.template, S.form, text, { images });
     const sec = findSection(S.catalog, $('#r-sec').value);

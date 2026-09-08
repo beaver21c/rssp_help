@@ -1,0 +1,328 @@
+{
+ "schema": "hwpx-studio/form@1",
+ "name": "guide6-sigungu",
+ "template": "template.hwpx",
+ "bullet_source": "auto",
+ "section": "Contents/section2.xml",
+ "header": "Contents/header.xml",
+ "preamble_bytes": 3250,
+ "levels": [
+  {
+   "key": "h1",
+   "marker": "#",
+   "name": "##123",
+   "style": 40,
+   "para": 6,
+   "char": 91,
+   "write_marker": false,
+   "numbering": null,
+   "marker_invented": false,
+   "auto_bullet": null,
+   "auto_number": null,
+   "size_pt": 16.0,
+   "left_pt": 0.0,
+   "seen": 5,
+   "samples": [
+    "제6기 지역사회보장계획 정책 방향 및 체계",
+    "지역사회보장사업 전략체계"
+   ]
+  },
+  {
+   "key": "h2",
+   "marker": "##",
+   "name": "가.",
+   "style": 1,
+   "para": 75,
+   "char": 80,
+   "write_marker": false,
+   "numbering": null,
+   "marker_invented": false,
+   "auto_bullet": null,
+   "auto_number": null,
+   "size_pt": 14.0,
+   "left_pt": 4.0,
+   "seen": 21,
+   "samples": [
+    "가. 목표 및 추진전략",
+    "나. 목표, 추진전략별 4년 추진계획"
+   ]
+  },
+  {
+   "key": "h3",
+   "marker": "###",
+   "name": "매뉴얼_1)",
+   "style": 2,
+   "para": 76,
+   "char": 87,
+   "write_marker": false,
+   "numbering": null,
+   "marker_invented": false,
+   "auto_bullet": null,
+   "auto_number": null,
+   "size_pt": 13.0,
+   "left_pt": 10.0,
+   "seen": 15,
+   "samples": [
+    "1) 목표 및 추진전략별 세부사업",
+    "2) 사회보장기본계획 및 기타 중장기 계획과의 연계성"
+   ]
+  },
+  {
+   "key": "h4",
+   "marker": "####",
+   "name": "(1)",
+   "style": 10,
+   "para": 88,
+   "char": 29,
+   "write_marker": false,
+   "numbering": null,
+   "marker_invented": false,
+   "auto_bullet": null,
+   "auto_number": null,
+   "size_pt": 11.5,
+   "left_pt": 15.0,
+   "seen": 27,
+   "samples": [
+    "(1) 현황",
+    "(2) 현황 분석에 따른 핵심과제 도출"
+   ]
+  },
+  {
+   "key": "guide",
+   "marker": "◆",
+   "name": "작성방법(네모)",
+   "style": 3,
+   "para": 190,
+   "char": 81,
+   "write_marker": false,
+   "numbering": null,
+   "marker_invented": true,
+   "auto_bullet": "✦",
+   "auto_number": null,
+   "size_pt": 12.0,
+   "left_pt": 15.0,
+   "seen": 14,
+   "samples": [
+    "작성양식 및 예시",
+    "(복지 수요 및 공급 분석)"
+   ]
+  },
+  {
+   "key": "circle",
+   "marker": "○",
+   "name": "요약_원",
+   "style": 4,
+   "para": 163,
+   "char": 48,
+   "write_marker": false,
+   "numbering": null,
+   "marker_invented": true,
+   "auto_bullet": "",
+   "auto_number": null,
+   "size_pt": 10.5,
+   "left_pt": 25.0,
+   "seen": 37,
+   "samples": [
+    "총괄현황: 00대 추진전략, 00개 세부사업(00개 중점추진사업)",
+    "(주요 수요 및 공급 진단 내용)"
+   ]
+  },
+  {
+   "key": "hyphen",
+   "marker": "-",
+   "name": "요약_하이픈",
+   "style": 5,
+   "para": 162,
+   "char": 44,
+   "write_marker": false,
+   "numbering": null,
+   "marker_invented": false,
+   "auto_bullet": "－",
+   "auto_number": null,
+   "size_pt": 10.5,
+   "left_pt": 34.0,
+   "seen": 12,
+   "samples": [
+    "돌봄 사각지대에 놓인 주민 발굴 시스템 운영 및 지원",
+    "생애주기에 따라 돌봄 필요 시점과 유형이 다양하게 나타나며 영유아기부터 노년기까지 각 시기별로 적절한 돌봄 지원이 요구됨"
+   ]
+  },
+  {
+   "key": "dot",
+   "marker": "·",
+   "name": "요약_점",
+   "style": 6,
+   "para": 164,
+   "char": 59,
+   "write_marker": false,
+   "numbering": null,
+   "marker_invented": true,
+   "auto_bullet": "",
+   "auto_number": null,
+   "size_pt": 10.5,
+   "left_pt": 45.0,
+   "seen": 2,
+   "samples": [
+    "안정적인 주거 기반 없이는 돌봄서비스의 효과성이 저하되며 지역사회 내 지속 거주 지원에도 한계가 발생함"
+   ]
+  },
+  {
+   "key": "subhead",
+   "marker": "▶",
+   "name": "가)",
+   "style": 56,
+   "para": 107,
+   "char": 34,
+   "write_marker": false,
+   "numbering": null,
+   "marker_invented": true,
+   "auto_bullet": null,
+   "auto_number": null,
+   "size_pt": 10.5,
+   "left_pt": 25.0,
+   "seen": 2,
+   "samples": [
+    "다) 시·군·구 사각지대 발굴·지원 업무 인력 구성 현황",
+    "라) 복지급여 및 보조금 관리 인력 구성 현황"
+   ]
+  },
+  {
+   "key": "unit",
+   "marker": "◎",
+   "name": "단위",
+   "style": 16,
+   "para": 31,
+   "char": 15,
+   "write_marker": false,
+   "numbering": null,
+   "marker_invented": true,
+   "auto_bullet": null,
+   "auto_number": null,
+   "size_pt": 8.0,
+   "left_pt": 0.0,
+   "seen": 6,
+   "samples": [
+    "(단위: 명)",
+    "(단위: 가구, 명, 건, %, 백만원)"
+   ]
+  },
+  {
+   "key": "plain",
+   "marker": "",
+   "name": "바탕글",
+   "style": 0,
+   "para": 67,
+   "char": 22,
+   "write_marker": false,
+   "numbering": null,
+   "marker_invented": false,
+   "auto_bullet": null,
+   "auto_number": null,
+   "size_pt": 10.5,
+   "left_pt": 0.0,
+   "seen": 61,
+   "samples": [
+    "<위 내용과 동일한 작성양식으로 해당 세부사업별 내용 작성>"
+   ]
+  }
+ ],
+ "blank": {
+  "style": 0,
+  "para": 67,
+  "char": 22
+ },
+ "table_wrap": {
+  "style": 0,
+  "para": 67,
+  "char": 22
+ },
+ "table": {
+  "border_fill": 3,
+  "header_fill": 12,
+  "body_fill": 9,
+  "width": 48140,
+  "row_min_height": 1649,
+  "cell_margin": {
+   "left": 141,
+   "right": 141,
+   "top": 141,
+   "bottom": 141
+  },
+  "in_margin": {
+   "left": 510,
+   "right": 510,
+   "top": 141,
+   "bottom": 141
+  },
+  "cell_para": {
+   "style": 14,
+   "para": 18,
+   "char": 110
+  },
+  "caption": null,
+  "guessed": false
+ },
+ "page": {
+  "size": "A4",
+  "width": 59527,
+  "height": 84189,
+  "orientation": "세로",
+  "margin_mm": {
+   "left": 20.0,
+   "right": 20.0,
+   "top": 12.0,
+   "bottom": 12.0,
+   "header": 15.0,
+   "footer": 12.0
+  },
+  "has_header": false,
+  "has_footer": false,
+  "has_page_number": false
+ },
+ "chapter": null,
+ "table_note": {
+  "key": "tnote",
+  "marker": "※",
+  "name": "주, 자료",
+  "style": 17,
+  "para": 32,
+  "char": 15,
+  "write_marker": false
+ },
+ "footnote": null,
+ "fonts": [
+  "KoPub돋움체 Bold",
+  "KoPub돋움체 Light",
+  "KoPub돋움체 Medium",
+  "KoPub바탕체 Bold",
+  "KoPub바탕체 Light",
+  "KoPub바탕체 Medium",
+  "ONE 모바일고딕 Title",
+  "돋움",
+  "돋움체",
+  "맑은 고딕",
+  "바탕",
+  "한컴돋움",
+  "함초롬돋움",
+  "함초롬바탕",
+  "휴먼명조"
+ ],
+ "notes": [
+  "kit2가 뽑아준 guide6/form.json을 손으로 고친 것이다. 고친 자리는 아래에 다 적었다.",
+  "section을 'Contents/section0.xml'에서 'Contents/section2.xml'로 바꿨다. 구역 3개 중 section0은 표지, section1은 제출문·발간사·목차이고 본문 4.15MB는 전부 section2에 있다. 원본 해부는 본문이 빈 첫 구역을 보고 레벨을 세운 탓에 seen이 모두 0이었다.",
+  "preamble_bytes를 3589에서 3250으로 다시 쟀다. section2의 첫 문단이 hp:secPr(용지 A4 세로·여백)과 hp:colPr을 한 run에 담고, 그 다음 run부터 '제1절' 띠 그림이 시작된다. secPr을 담은 run이 끝나는 자리(3243바이트)에서 자르고 </hp:p>를 붙여 3250바이트가 됐다. 이 앞부분을 지우면 한글이 문서를 기본 용지로 열어버린다.",
+  "레벨 42개를 11개로 줄였다. 남긴 것은 section2 최상위 문단에서 실제로 글자를 달고 나온 스타일뿐이다(seen 참조). 'xl65'~'xl74', 'Normal', 'List Paragraph', '참고문헌*', '쪽 번호', '표강조색', '바탕글 사본*', '개체', '차례 1', '제목8', '타이틀-장제목', '절', '본문', '작성방법(하이픈)', '땡', '원', '1. 가', '별표'는 본문에 안 나와 덜어냈다.",
+  "'요약_네모'(스타일 41)도 덜어냈다. 최상위에 한 번 나오는데 그 문단은 글이 아니라 표 하나를 싣고 있는 표 감싸개다. 표 전용 레벨이라 작성용 마커를 줄 까닭이 없다.",
+  "h1~h4를 본문 실측 스타일로 갈아 끼웠다. 원본 해부는 header.xml의 이름 순서대로 h1='타이틀-장제목', h2='제목8'을 골랐지만 본문에서 안 쓰인다. 실제 계층은 장='##123'(제N절 띠 그림 안 제목), 절='가.', 항='매뉴얼_1)', 목='(1)'이라 그대로 #, ##, ###, ####에 물렸다.",
+  "마커 충돌을 풀었다. 원본은 '####'가 열한 레벨에, '-'와 '·'가 각각 두 레벨에 겹쳐 있었다. 겹치던 레벨을 대부분 덜어내면서 남은 마커는 #, ##, ###, ####, ◆, ○, -, ·, ▶, ◎와 표 주 ※로 모두 다르다.",
+  "'작성방법(네모)'에 ◆를, '가)'에 ▶를, '단위'에 ◎를 새로 줬다(marker_invented=true). 세 스타일 모두 한글 자동 번호매기기가 없어(heading type=NONE 또는 BULLET ✦) 마커를 고를 근거가 스타일 이름밖에 없다.",
+  "'요약_원'(○)과 '요약_점'(·)의 자동 글머리표는 한글 기호 글꼴의 사용자 영역 글자라 여기에 옮겨 적으면 깨진다. 그래서 marker_invented=true로 두되 마커는 눈에 익은 ○··로 골랐다. '요약_하이픈'만 자동 글머리표가 '－'라 마커 '-'가 근거 있는 값이다.",
+  "write_marker는 전부 false다. 개조식 세 레벨은 한글이 글머리표를 붙이고, 제목 레벨은 '가.' '1)' '(1)'처럼 번호를 사람이 본문에 직접 친다. 도구가 기호를 또 찍으면 겹친다.",
+  "table 골격을 안내서의 실제 데이터 표 39개(지시문 박스 제외)에서 실측해 채웠다. 기본값(폭 39456, 채움 1/1/1, 셀문단 0/0/0)은 다 버렸다. 폭 48140은 39개 표 폭의 중앙값이고 본문 폭(59527-5669*2=48189)과도 맞는다. 행 높이 1649는 머리행을 뺀 셀 높이의 중앙값이다.",
+  "표 채움값은 표별 최빈값으로 골랐다. 표 테두리 3(23/39개), 머리 칸 12, 본문 칸 9다. 안내서 표는 왼쪽 끝·가운데·오른쪽 끝 칸의 테두리 번호가 저마다 달라 한 값으로는 가운데 칸 것을 쓸 수밖에 없다.",
+  "cell_para는 표 본문 칸의 최빈 조합인 '표_내용(본문)'(스타일 14 / 문단 18 / 글자 110)으로 뒀다. 머리행은 '표_구분항목'(13/19/12)이 최빈이지만 form 스키마에 셀 문단 자리가 하나뿐이라 본문 쪽을 택했다. 머리행 글씨는 header_fill로 구분된다.",
+  "page를 section2의 secPr에서 다시 쟀다. 위·아래 여백이 10.0/15.0mm가 아니라 둘 다 12.0mm(3401 HWPUNIT)이고 꼬리말도 10.0이 아니라 12.0mm다. 원본 값은 표지 구역(section0)의 것이었다.",
+  "table_note는 '주, 자료'(스타일 17) 그대로 뒀다. 본문에서 표 바로 아래 주석 줄로 17번 나온다. 다만 key를 'level23'에서 'tnote'로 고쳤다 — 덜어낸 레벨 번호와 헷갈린다.",
+  "각주 스타일이 없는 것은 원본 그대로다. footnote=null이므로 [^1] 각주를 쓰면 한글에서 서식이 흐트러진다."
+ ]
+}
