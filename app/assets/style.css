@@ -35,11 +35,40 @@ button,input,select,textarea{font-family:inherit;font-size:inherit;color:inherit
 .tab:hover{color:var(--ink);background:var(--sheet)}
 .tab.on{color:var(--navy);border-bottom-color:var(--navy);font-weight:600}
 .top-r{margin-left:auto;display:flex;align-items:center;gap:9px}
-.keychip{display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:5px 10px;
-  border:1px solid var(--rule);background:var(--paper);border-radius:3px;cursor:pointer}
-.keychip:hover{border-color:var(--navy);color:var(--navy)}
-.keychip .dot{width:7px;height:7px;border-radius:50%;background:var(--ink-4)}
-.keychip.set .dot{background:var(--green)}
+
+/* ── API 키 설정 띠 ── */
+/* 상태에 따라 세 덩어리 중 하나만 보인다. need·busy·fail은 입력 양식, ok는 한 줄 요약, off는 안내 줄 */
+.setup{background:var(--navy-soft);border-bottom:1px solid var(--rule)}
+.setup-in{max-width:1440px;margin:0 auto;padding:12px 20px}
+.setup .s-form,.setup .s-ok,.setup .s-off{display:none}
+.setup[data-state="need"] .s-form,
+.setup[data-state="busy"] .s-form,
+.setup[data-state="fail"] .s-form{display:block}
+.setup[data-state="ok"] .s-ok{display:flex}
+.setup[data-state="off"] .s-off{display:flex}
+.setup[data-state="ok"],.setup[data-state="off"]{background:var(--paper)}
+.setup[data-state="fail"]{background:var(--red-soft)}
+
+.s-hd{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:9px}
+.s-hd b{font-size:14px}
+.s-hd span{font-size:12.2px;color:var(--ink-2)}
+.s-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.s-row #k-in{flex:1 1 340px;max-width:520px;font-family:var(--mono);font-size:12.5px}
+.s-sub{margin-top:8px;font-size:12px;color:var(--ink-3)}
+.s-sub .radio{margin-top:0}
+.s-link{margin-left:auto;color:var(--navy);font-size:12px}
+.setup .status{margin-top:8px}
+.setup .tip{max-width:1000px}
+/* 실패했을 때만 내미는 단추들 */
+.setup:not([data-state="fail"]) #k-force,
+.setup:not([data-state="fail"]) #k-auto{display:none}
+
+.s-ok,.s-off{align-items:center;gap:10px;flex-wrap:wrap;font-size:12.5px}
+.s-dot{width:8px;height:8px;border-radius:50%;background:var(--green);flex:none}
+.s-off .s-dot{background:var(--ink-4)}
+.s-why{color:var(--ink-3);font-size:12px}
+.s-ml{margin-left:auto;font-size:12px;font-weight:600;color:var(--ink-2)}
+.s-ok #k-model{width:auto;min-width:200px;font-size:12.3px;padding:4px 8px}
 
 /* ── 판 ── */
 .page{max-width:1440px;margin:0 auto;padding:18px 20px 60px}

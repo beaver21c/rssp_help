@@ -62,7 +62,7 @@ function pickSleep(deps) {
 // 키 보관 — 저장소가 없는 환경(Node)에서도 죽지 않게 감싼다
 // ──────────────────────────────────────────────────────────────
 /** 저장소가 아예 없을 때 대신 쓰는 자리. 프로세스가 살아 있는 동안만 남는다. */
-const memory = { local: '', session: '' };
+const memory = { local: '', session: '', pref: '' };
 let memoryOnly = false;
 
 function store(kind) {
@@ -164,6 +164,30 @@ export function orderModels(names) {
   const flash = all.filter((n) => n.includes('flash')).sort(byRank);
   const rest = all.filter((n) => !n.includes('flash'));
   return [...flash, ...rest];
+}
+
+/* 마지막으로 성공한 모델. 구글이 목록을 바꿔도 어제 되던 것부터 다시 해 본다.
+   반대로 그 모델이 사라지면(404) 곧바로 버려서 묵은 이름에 매이지 않는다. */
+const PREF_NAME = 'gemini_model';
+
+export function getPreferred() {
+  const s = store('local');
+  if (!s) return memory.pref || '';
+  try { return s.getItem(PREF_NAME) || memory.pref || ''; }
+  catch (e) { return memory.pref || ''; }
+}
+
+export function setPreferred(name) {
+  const one = String(name || '').replace(/^models\//, '');
+  // 주소를 비틀 수 있는 이름은 기억하지 않는다(모델 이름은 URL 경로에 그대로 들어간다)
+  const ok = one && SAFE_MODEL.test(one) ? one : '';
+  memory.pref = ok;
+  const s = store('local');
+  if (!s) return;
+  try {
+    if (ok) s.setItem(PREF_NAME, ok);
+    else s.removeItem(PREF_NAME);
+  } catch (e) { /* 저장소가 막혀 있으면 메모리에만 둔다 */ }
 }
 
 let modelCache = null;   // { key, models }
@@ -315,7 +339,19 @@ export async function generate(opts, deps) {
     if (!SAFE_MODEL.test(one)) throw new Error(`모델 이름에 못 쓰는 글자가 있다: ${one}`);
     models = [one];
   } else {
-    models = await listModels(key, deps);
+    let listErr = null;
+    try {
+      models = await listModels(key, deps);
+    } catch (e) {
+      // 목록 창구가 막히거나 모양이 바뀌어도 멈추지 않는다. 아는 이름으로 밀어붙인다.
+      if (isKeyFault(e && e.message)) throw Object.assign(e, { fatal: true });
+      listErr = e;
+      models = [...FALLBACK_MODELS];
+    }
+    // 어제 되던 모델을 맨 앞에 세운다(없어졌으면 아래 고리가 알아서 버린다)
+    const pref = getPreferred();
+    if (pref) models = [pref, ...models.filter((m) => m !== pref)];
+    if (listErr) o._listError = listErr.message;
   }
   const headers = { 'Content-Type': 'application/json', ...authHeader(key) };
   let last = null;
@@ -344,7 +380,7 @@ export async function generate(opts, deps) {
           break;
         }
         const text = answerText(j);
-        if (text) return { model, text };
+        if (text) { setPreferred(model); return { model, text }; }
         // 200이어도 알맹이가 없으면 실패로 친다. 빈 원고를 성공이라고 넘기면
         // 화면에는 "완료"가 뜨고 상자만 비는 꼴이 된다.
         const why = emptyReason(j);
@@ -353,11 +389,16 @@ export async function generate(opts, deps) {
       }
       last = await httpError(r);
       if (isKeyFault(last.message)) throw Object.assign(last, { fatal: true });
+      // 없어진 이름을 계속 물고 있지 않는다
+      if (last.status === 404 && model === getPreferred()) setPreferred('');
       // 429는 잠깐 쉬었다 다음 모델로. 마지막 모델이면 쉬어 봐야 헛기다림이다.
       if (last.status === 429) { if (!isLast) await sleep(RETRY_MS); break; }
       if (last.status === 400 && useSchema) continue;
       break;                    // 404 등 — 다음 모델
     }
+  }
+  if (last && o._listError) {
+    last.message += ` (모델 목록도 받지 못했다: ${o._listError})`;
   }
   throw last || new Error('쓸 수 있는 모델이 없다.');
 }
@@ -373,4 +414,52 @@ export async function checkKey(key, deps) {
   } catch (e) {
     return { ok: false, models: [], model: '', scope: keyScope(), error: e.message };
   }
+}
+
+/** 연결 확인에 쓰는 최소 프롬프트. 토큰을 거의 안 먹는다. */
+export const PING = '연결 확인이다. 다른 말 없이 정확히 OK 라고만 답한다.';
+
+/**
+ * 키가 **실제로 원고를 만들 수 있는지**까지 본다.
+ *
+ * 목록 조회(checkKey)만으로는 두 가지를 못 걸러낸다.
+ *   ① 목록은 되는데 generateContent만 막힌 키(결제·지역 제한)
+ *   ② 구글이 모델 이름을 갈아 치워 우리가 아는 이름이 하나도 안 남은 경우
+ * 그래서 여기서는 목록을 받아 본 뒤 진짜 생성 호출을 한 번 때려 본다.
+ * 목록 창구가 막혀도 내장 이름으로 밀어붙이므로, 목록 실패가 곧 실패는 아니다.
+ *
+ * opts = { key, model }  — model을 주면 그 이름을 맨 앞에 세워 확인한다
+ * 돌려주는 값 { ok, model, models, listed, listError, error, fatal, sample, scope }.
+ */
+export async function verifyKey(opts, deps) {
+  const o = opts || {};
+  const out = { ok: false, model: '', models: [], listed: false, listError: '',
+    error: '', fatal: false, sample: '', scope: keyScope() };
+  let key;
+  try {
+    key = needKey(o.key);
+  } catch (e) {
+    out.error = e.message;
+    return out;
+  }
+  try {
+    out.models = await listModels(key, deps);
+    out.listed = true;
+  } catch (e) {
+    // 키가 거부된 것이면 생성도 볼 것 없다. 그 밖의 사유는 내장 목록으로 계속 간다.
+    if (isKeyFault(e && e.message)) { out.error = e.message; out.fatal = true; return out; }
+    out.models = [...FALLBACK_MODELS];
+    out.listError = e.message;
+  }
+  try {
+    const r = await generate(
+      { key, model: o.model || '', prompt: PING, temperature: 0 }, deps);
+    out.ok = true;
+    out.model = r.model;
+    out.sample = String(r.text || '').trim().slice(0, 40);
+  } catch (e) {
+    out.error = e.message;
+    out.fatal = !!e.fatal;
+  }
+  return out;
 }

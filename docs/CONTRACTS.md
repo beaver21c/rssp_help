@@ -148,21 +148,39 @@ export async function renderComparisonChart(rows, opts): Uint8Array   // PNG
 export function getKey(): string
 export function setKey(key, persist): void        // persist=true면 localStorage, 아니면 sessionStorage
 export function keyScope(): 'local'|'session'|''
+export function getPreferred(): string            // 마지막에 성공한 모델
+export function setPreferred(name): void          // 못 쓰는 이름은 물리치고 빈 값으로
 export async function listModels(key): string[]   // flash 계열 우선 정렬
 export async function generate(opts): {model, text}
+export async function checkKey(key): {ok, models, model, scope, error}
+export async function verifyKey({key, model}): {ok, model, models, listed, listError, error, fatal, sample, scope}
 ```
 
 ```
 opts = { system: string, prompt: string,
          files: [{mimeType, data}],       // attach.js의 inline 그대로
-         temperature: 0.3, json: false }
+         temperature: 0.3, json: false, model: '' }
 ```
 
 - 엔드포인트 `https://generativelanguage.googleapis.com/v1beta`
 - 키는 **`x-goog-api-key` 헤더로만** 보낸다. 쿼리스트링 금지
 - 모델 목록에서 `exp|experimental|preview|tts|image|embed|live|audio|thinking` 제외
+- 모델 이름은 `^[A-Za-z0-9._-]+$`만 받는다(URL 경로에 그대로 들어가는 값이다)
 - 429 → 2초 대기 후 다음 모델 / 404 → 즉시 다음 모델 / 키 오류 → 즉시 중단(`err.fatal = true`)
 - 지표 **값 데이터는 전송하지 않는다**. 전송 대상은 사용자 입력·첨부파일·절 지시문뿐
+
+**모델 교체 대비**(구글이 이름을 갈아 치워도 멈추지 않게)
+
+| 규칙 | 구현 |
+|---|---|
+| 이름을 코드에 박지 않는다 | 호출 때마다 `listModels`로 살아 있는 목록을 받는다 |
+| 어제 되던 것을 먼저 | `generate` 성공 시 `setPreferred(model)`. 다음 호출에서 목록 맨 앞에 세운다 |
+| 죽은 이름은 즉시 버린다 | 그 모델이 404면 `setPreferred('')` |
+| 목록이 막혀도 진행 | `listModels` 실패는 치명적이지 않다. `FALLBACK_MODELS`로 계속하고 실패 사유를 최종 오류 메시지에 덧붙인다. 단 키 오류는 예외(즉시 중단) |
+| 확인은 실호출로 | `verifyKey`는 목록 조회 뒤 `PING` 프롬프트로 `generateContent`를 한 번 부른다. `model`을 주면 그 이름만 시험한다(폴백을 타지 않아 죽은 이름이 드러난다) |
+
+화면(`app.js`)은 이 계약 위에 `need → busy → ok/fail/off` 상태 띠를 올린다.
+`K.verified`가 참일 때만 AI 단추가 열린다.
 
 ## 7. 시험
 
