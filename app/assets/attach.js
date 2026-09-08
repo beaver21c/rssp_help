@@ -2,7 +2,7 @@
  * 첨부파일 → 텍스트·표 추출.
  *
  * 외부 라이브러리를 쓰지 않는다. zip 해제는 ./zip.js, XML 훑기는 ./xml.js,
- * hwpx 되읽기는 ./readback.js를 그대로 쓴다.
+ * hwpx 되읽기는 ./docread.js를 쓴다 — 본문 구역만 읽어야 표지·제출문·목차가 섞이지 않는다.
  * 브라우저에서 뽑을 수 없는 형식(pdf·이미지)은 파싱하지 않고 base64로 담아
  * 원본 그대로 Gemini에 보낸다.
  */
@@ -10,7 +10,7 @@
 
 import { unzip } from './zip.js';
 import { attr, unescapeXml } from './xml.js';
-import { readBack } from './readback.js';
+import { readBodyText } from './docread.js';
 
 export const SUPPORTED = ['hwpx', 'xlsx', 'xlsm', 'csv', 'pptx', 'txt', 'md',
   'html', 'htm', 'pdf', 'png', 'jpg', 'jpeg'];
@@ -470,16 +470,35 @@ function fromHtml(bytes) {
 // ──────────────────────────────────────────────────────────────
 // hwpx
 // ──────────────────────────────────────────────────────────────
-async function fromHwpx(bytes) {
-  const result = await readBack(bytes, null);
-  const candidates = result.blocks.filter((b) => b.kind === 'table')
-    .map((b) => squareUp(b.rows));
-  const { tables, dropped } = capTables(candidates);
+/** 마커 원고에서 파이프 표를 뽑는다. docread가 표를 파이프 표기로 내놓는다. */
+function pipeTables(text) {
+  const out = [];
+  let cur = null;
+  for (const raw of String(text).split('\n')) {
+    const s = raw.trim();
+    const isRow = s.startsWith('|') && s.endsWith('|') && s.length > 2;
+    if (isRow) {
+      const body = s.slice(1, -1);
+      if (/^[\s:|-]+$/.test(body)) continue;              // 머리행 아래 구분선
+      const cells = body.split('|').map((c) => c.trim());
+      if (!cur) { cur = [cells]; out.push(cur); } else cur.push(cells);
+    } else if (s) {
+      cur = null;
+    }
+  }
+  return out.map(squareUp);
+}
+
+async function fromHwpx(bytes, form) {
+  const rb = await readBodyText(bytes, form || null);
+  const { tables, dropped } = capTables(pipeTables(rb.text));
+  const where = rb.skipped && rb.skipped.length
+    ? ` (본문 구역 ${rb.section}만 읽었고 표지·제출문 구역은 건너뛰었다)` : '';
   return {
-    text: result.text,
+    text: rb.text,
     tables,
     note: `한글 문서에서 문단과 표 ${tables.length}개를 읽었다`
-      + (dropped ? ` (표 ${dropped}개는 잘렸다)` : ''),
+      + (dropped ? ` (표 ${dropped}개는 잘렸다)` : '') + where,
   };
 }
 
@@ -491,7 +510,7 @@ async function fromHwpx(bytes) {
  * @param {File|{name:string,bytes:Uint8Array}} file
  * @returns {Promise<{name,ext,mode,text,tables,inline,bytes,note}>}
  */
-export async function extractAttachment(file) {
+export async function extractAttachment(file, opts = {}) {
   const name = (file && file.name) || '';
   const ext = extOf(name);
   if (!SUPPORTED.includes(ext)) {
@@ -522,7 +541,7 @@ export async function extractAttachment(file) {
   }
 
   let picked;
-  if (ext === 'hwpx') picked = await fromHwpx(bytes);
+  if (ext === 'hwpx') picked = await fromHwpx(bytes, opts.form);
   else if (ext === 'xlsx' || ext === 'xlsm') picked = await fromXlsx(bytes);
   else if (ext === 'pptx') picked = await fromPptx(bytes);
   else if (ext === 'csv') picked = fromCsv(bytes);

@@ -283,7 +283,11 @@ for (const node of targets) {
 /* ───────── 지역여건 분석 ───────── */
 head('지역여건 분석 (지표 → 그래프 → 그림이 박힌 hwpx)');
 await page.click('.tab[data-tab="region"]');
-await page.waitForSelector('#r-sgg option', { timeout: 20000 });
+// option은 화면에 '보이는' 요소가 아니라 visible 대기가 통하지 않는다 → 개수로 기다린다
+await page.waitForFunction(
+  () => document.querySelectorAll('#r-sgg option').length > 0
+     && document.querySelectorAll('#r-sido option').length >= 17,
+  null, { timeout: 30000 });
 
 const CASES = [
   { sido: '경기도', hint: '수원' },
@@ -345,8 +349,15 @@ const made = fs.readdirSync(OUT).filter((f) => f.endsWith('.hwpx'));
 if (made.length) {
   consoleErrs.length = 0;
   await page.click('.tab[data-tab="check"]');
-  await page.setInputFiles('#c-file', path.join(OUT, made[0]));
-  await page.waitForTimeout(150);
+  // 이 환경의 playwright는 경로에 한글이 섞이면 setInputFiles가 조용히 실패한다
+  // (오류도 이벤트도 없이 files=0). 산출물 이름이 한글이라 버퍼로 넘긴다.
+  await page.setInputFiles('#c-file', {
+    name: 'check.hwpx',
+    mimeType: 'application/octet-stream',
+    buffer: fs.readFileSync(path.join(OUT, made[0])),
+  });
+  await page.waitForFunction(() => !document.querySelector('#c-run').disabled,
+    null, { timeout: 20000 });
   await page.click('#c-run');
   await page.waitForFunction(() => /완료|실패/.test(document.querySelector('#c-status').textContent),
     null, { timeout: 60000 });

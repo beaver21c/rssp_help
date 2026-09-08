@@ -84,14 +84,22 @@ source/                     # 원본 안내서(웹 미공개)
 ## 시험
 
 ```bash
-node tests/test_form_parity.mjs      # 양식 보존 빌더가 파이썬판과 같은 XML을 내는가
-node tests/test_attach.mjs           # 첨부파일 추출
-node tests/test_indicator.mjs        # 지표 산출·비교집단·차트 배치
-node tests/test_catalog_js.mjs       # 절 카탈로그 소비 모듈
-node tests/test_gemini.mjs           # 키 관리·모델 폴백(가짜 fetch)
 python3 tests/test_catalog.py        # 카탈로그 추출 결과·템플릿 무결성
-node tests/test_e2e.mjs              # 브라우저에서 절별 산출까지 (Playwright)
+node tests/test_form_parity.mjs      # 양식 보존 빌더가 파이썬판과 같은 XML을 내는가
+node tests/test_docread.mjs          # 되돌리기 — 본문 구역만·마커 왕복        (27건)
+node tests/test_attach.mjs           # 첨부파일 추출                          (118건)
+node tests/test_indicator.mjs        # 지표 산출·비교집단·차트                 (44건)
+node tests/test_catalog_js.mjs       # 절 카탈로그 소비 모듈                   (60건)
+node tests/test_gemini.mjs           # 키 관리·모델 폴백(가짜 fetch)           (86건)
+node tests/test_e2e.mjs              # 브라우저에서 65개 마디 전부 산출        (700건)
 ```
+
+`test_e2e.mjs`는 Chromium을 띄워 실제 화면을 조작한다. 마디마다 양식을 넣고 hwpx를
+받아 열어 보며 ①표지·제출문·글꼴이 원본과 해시가 같은지 ②안내서가 정한 표가 다
+들어갔는지 ③열 수와 머리행이 그대로인지를 확인한다. `--max=3`으로 줄여 돌릴 수 있고
+`--only=02-나-1`로 한 마디만 볼 수도 있다.
+
+최근 실행 결과 — 65/65 마디 산출, 단언 700건 전부 통과.
 
 ## 산출 방식에 관한 주의
 
