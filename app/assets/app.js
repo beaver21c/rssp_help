@@ -85,21 +85,45 @@ function buildTree() {
   const list = sectionList(S.catalog);
   $('#w-cnt').textContent = `${list.length}개 마디`;
   for (const it of list) {
-    const node = findSection(S.catalog, it.id);
+    const node = resolve(findSection(S.catalog, it.id));
     const b = el('button', 'tnode');
     b.dataset.d = String(it.depth); b.dataset.id = it.id;
     const nForms = blankForms(node).length;
     b.innerHTML = `<span class="no">${esc(node.no || '')}</span>${esc(node.title)}` +
       (nForms ? `<span class="badge">표 ${nForms}</span>` : '') +
-      (node.howto ? '<span class="badge">지침</span>' : '');
+      (node.howto ? '<span class="badge">지침</span>' : '') +
+      (node._from ? '<span class="badge">전략1 준용</span>' : '');
     b.onclick = () => selectSection(it.id);
     host.appendChild(b);
   }
 }
 
+/* 마디 하나를 집필에 쓸 수 있는 꼴로 푼다.
+   - mirrors: [사회보장 전략 2~4]는 안내서가 제목만 두고 1번 구조를 되풀이하게 한다
+   - howto_ref: 65개 마디 중 지침 박스를 직접 가진 것은 16개뿐이라 나머지는 기댈 마디를 가리킨다
+   catalog.js는 이 두 필드를 모르므로 여기서 풀어 넘긴다. */
+function resolve(node) {
+  if (!node) return null;
+  const base = node.mirrors ? (findSection(S.catalog, node.mirrors) || node) : node;
+  const hostId = base.howto ? null : base.howto_ref;
+  const host = hostId ? findSection(S.catalog, hostId) : null;
+  const howto = base.howto || (host && host.howto) || null;
+  const limits = (base.limits && base.limits.length) ? base.limits
+    : (host && host.limits) || [];
+  return {
+    ...node,
+    howto,
+    forms: base.forms || [],
+    limits,
+    _from: base.id !== node.id ? base : null,
+    _howtoFrom: howto && !node.howto ? (base.howto ? base : host) : null,
+  };
+}
+
 function selectSection(id) {
-  const node = findSection(S.catalog, id);
-  if (!node) return;
+  const raw = findSection(S.catalog, id);
+  if (!raw) return;
+  const node = resolve(raw);
   S.wSection = node;
   $$('#w-tree .tnode').forEach((b) => b.classList.toggle('on', b.dataset.id === id));
 
@@ -111,15 +135,20 @@ function selectSection(id) {
 
   const h = $('#w-howto');
   if (node.howto) {
+    const src = [];
+    if (node._from) src.push(`표 양식·지침은 「${node._from.no || ''} ${node._from.title}」의 것을 그대로 쓴다(안내서가 1번만 펼쳐 적음)`);
+    else if (node._howtoFrom) src.push(`지침은 「${node._howtoFrom.no || ''} ${node._howtoFrom.title}」에 적힌 것이다`);
     const p = node.howto.purpose, m = node.howto.method;
-    h.innerHTML = (p || m)
-      ? (p ? `<h4>작성취지</h4>${esc(p)}` : '') + (m ? `<h4>작성방법</h4>${esc(m)}` : '')
-      : esc(node.howto.raw);
+    h.innerHTML = (src.length ? `<h4>※ ${esc(src[0])}</h4>` : '') +
+      ((p || m)
+        ? (p ? `<h4>작성취지</h4>${esc(p)}` : '') + (m ? `<h4>작성방법</h4>${esc(m)}` : '')
+        : esc(node.howto.raw));
   } else {
-    h.textContent = '이 마디에는 안내서의 「작성 취지 및 방법」 박스가 없다. 상위 마디의 지침을 참고해 쓴다.';
+    h.textContent = '이 마디에는 안내서의 「작성 취지 및 방법」 박스가 없다. 절 제목이 요구하는 내용만 쓴다.';
   }
 
   const fbox = $('#w-forms'); fbox.innerHTML = '';
+  const layouts = (node.forms || []).filter((f) => f.kind === 'layout');
   const forms = blankForms(node);
   forms.forEach((f, i) => {
     fbox.appendChild(el('div', 'formcap', `표 ${i + 1} — ${f.rows}행 ${f.cols}열${f.required ? ' · 필수' : ''}`));
@@ -135,7 +164,14 @@ function selectSection(id) {
     });
     w.appendChild(t); fbox.appendChild(w);
   });
-  if (!forms.length) fbox.appendChild(el('p', 'note', '이 마디에 고정된 표 양식은 없다. 서술형으로 쓴다.'));
+  if (!forms.length && !layouts.length) {
+    fbox.appendChild(el('p', 'note', '이 마디에 고정된 표 양식은 없다. 서술형으로 쓴다.'));
+  }
+  for (const f of layouts) {
+    fbox.appendChild(el('p', 'note',
+      `도식 ${f.rows}행 ${f.cols}열 — 전략체계도처럼 표로 그린 그림이라 이 도구가 받아쓰지 않는다. ` +
+      '산출한 hwpx를 한글에서 열어 안내서의 도식을 직접 옮겨 그릴 것.'));
+  }
 
   $('#w-make').disabled = !$('#w-draft').value.trim();
   $('#r-sec').value = id;
@@ -162,7 +198,7 @@ wireDrop('#w-drop', '#w-file', async (files) => {
     if (!SUPPORTED.includes(ext)) { say('#w-status', `${f.name} — 지원하지 않는 형식(${ext})`, 'err'); continue; }
     say('#w-status', `${f.name} 읽는 중…`, 'busy');
     try {
-      S.wFiles.push(await extractAttachment(f));
+      S.wFiles.push(await extractAttachment(f, { form: S.form }));
       say('#w-status', '');
     } catch (e) { say('#w-status', `${f.name} — ${e.message}`, 'err'); }
     renderFiles();
@@ -233,6 +269,12 @@ $('#w-gen').onclick = async () => {
 
 const stripFence = (t) => String(t).replace(/^```[a-z]*\n?/i, '').replace(/```\s*$/, '').trim();
 
+/* 표 칸 하나를 파이프 표에 넣을 수 있는 한 줄로 눕힌다.
+   안내서 머리행에는 줄바꿈이 흔하다("성과지표 명\n(단위)"). 그대로 쓰면 파이프 표
+   한 줄이 두 줄로 쪼개져 표가 깨진다. 칸 구분자와 겹치는 세로줄도 바꿔 놓는다. */
+const cell = (s) => String(s == null ? '' : s)
+  .replace(/\s+/g, ' ').replace(/\|/g, '∣').trim() || ' ';
+
 /* AI 없이 양식만 채운 뼈대 */
 $('#w-skel').onclick = () => {
   if (!S.wSection) return say('#w-status', '먼저 절을 고른다', 'err');
@@ -243,12 +285,18 @@ $('#w-skel').onclick = () => {
   const forms = blankForms(n);
   if (!forms.length) L.push('○ ○○○○', '▪ ○○○○', '');
   forms.forEach((f, i) => {
-    L.push(`○ ${f.header.filter(Boolean)[0] || '작성 항목'}`);
+    const head = f.header.map(cell);
+    L.push(`○ ${head.find((h) => h.trim()) || '작성 항목'}`);
     if (f.colWidths && f.colWidths.length === f.cols) L.push(`{cols=${f.colWidths.join(',')}}`);
-    L.push('| ' + f.header.map((h) => h || ' ').join(' | ') + ' |');
+    L.push('| ' + head.join(' | ') + ' |');
     L.push('|' + Array(f.cols).fill('---').join('|') + '|');
+    // 안내서가 구분 칸에 미리 적어 둔 말(예: '계', '공무원')은 살려 둔다
     const bodyRows = Math.max(1, Math.min(5, f.rows - 1));
-    for (let r = 0; r < bodyRows; r++) L.push('| ' + Array(f.cols).fill('○○').join(' | ') + ' |');
+    for (let r = 0; r < bodyRows; r++) {
+      const src = (f.grid && f.grid[r + 1]) || [];
+      L.push('| ' + Array.from({ length: f.cols },
+        (_, c) => (src[c] && src[c].trim()) ? cell(src[c]) : '○○').join(' | ') + ' |');
+    }
     L.push('※ 자료：○○○.', '');
   });
   $('#w-draft').value = L.join('\n');
@@ -541,7 +589,7 @@ $('#c-run').onclick = async () => {
 
     const secId = $('#c-sec').value;
     if (secId) {
-      const node = findSection(S.catalog, secId);
+      const node = resolve(findSection(S.catalog, secId));
       const want = blankForms(node), got = countTables(rb.text);
       if (want.length && got.length < want.length) {
         out.push({ lv: 'err', msg: `안내서가 요구하는 표 ${want.length}개 중 ${got.length}개만 있다` });

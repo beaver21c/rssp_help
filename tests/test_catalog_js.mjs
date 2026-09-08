@@ -1,19 +1,131 @@
 /* app/assets/catalog.js 검사 — node tests/test_catalog_js.mjs
  *
  * 시험 틀은 안 쓴다. 어긋나면 사유를 찍고 process.exitCode = 1로 끝낸다.
- * 기준 자료는 tests/fixtures/sections.sample.json(스키마 그대로 손으로 만든 고정 데이터)이다.
+ * 기준 자료는 docs/SECTIONS_SCHEMA.md 스키마대로 손으로 짠 고정 데이터다. tests/fixtures/는
+ * 저장소에 담지 않으므로(그쪽 .gitignore) 여기서 매번 sections.sample.json으로 떨군 뒤 읽는다.
  * app/data/sections.json이 있으면 그것으로도 한 번 더 돌리되, 없다고 실패로 보지 않는다.
  */
 
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
   loadCatalog, findSection, sectionList, promptFor, blankForms, checkLimits,
   pathOf, outline,
 } from '../app/assets/catalog.js';
-
 const FIXTURE = new URL('./fixtures/sections.sample.json', import.meta.url);
 const REAL = new URL('../app/data/sections.json', import.meta.url);
+
+/* ───────── 고정 데이터 — 스키마를 그대로 따른 축소본 ─────────
+ * 장(0) 아래 절(1) 둘, 그 아래 항(2)·목(3)까지 넣어 깊이 차례를 볼 수 있게 했다.
+ * 표는 네 갈래(howto·blank·example·note)를 다 넣고, 01-나는 idx를 일부러 뒤집어
+ * blankForms가 차례를 바로잡는지 본다. 제약은 max·min·원고에 없는 것 셋이다. */
+const SAMPLE = {
+  source: '제6기(2027~2030) 지역사회보장계획 수립 안내 [시·군·구] (시험용 축소본)',
+  scope: '시군구',
+  generated_at: '2026-09-08T00:00:00',
+  template: 'template.hwpx',
+  body_section: 'Contents/section2.xml',
+  stats: { chapters: 2, nodes: 6, forms: 6, howtos: 2 },
+  nodes: [
+    {
+      id: '01', depth: 0, no: '제1절', title: '지역사회보장계획 추진체계', page: 12,
+      parent: null, children: ['01-가', '01-나'],
+      howto: null, forms: [], limits: [], fixed: false, markers: [],
+    },
+    {
+      id: '01-가', depth: 1, no: '가.', title: '목표 및 추진전략', page: 13,
+      parent: '01', children: ['01-가-1'],
+      howto: {
+        purpose: '(법적근거) 「사회보장급여법」 제35조\n지역 복지수요에 대응하는 중장기 전략체계를 자율적으로 세운다.',
+        method: '전략체계-추진전략-중점추진사업-세부사업의 구성 체계를 제시한다.\n추진전략(5개 이내), 세부사업(3개 이상)으로 구성할 것을 권장한다.',
+        raw: '◆ 작성 취지 및 방법 ◆\n작성취지\n(법적근거) 「사회보장급여법」 제35조\n'
+          + '지역 복지수요에 대응하는 중장기 전략체계를 자율적으로 세운다.\n작성방법\n'
+          + '전략체계-추진전략-중점추진사업-세부사업의 구성 체계를 제시한다.\n'
+          + '추진전략(5개 이내), 세부사업(3개 이상)으로 구성할 것을 권장한다.\n'
+          + '※ (참조) 세부사업은 예산사업과 비예산사업을 모두 포함한다.',
+        chars: 231,
+      },
+      forms: [
+        {
+          idx: 0, kind: 'howto', rows: 3, cols: 3,
+          header: ['◆ 작성 취지 및 방법 ◆', '', ''],
+          grid: [['◆ 작성 취지 및 방법 ◆', '', ''], ['작성취지', '', ''], ['작성방법', '', '']],
+          colWidths: [20, 40, 40], required: false,
+        },
+        {
+          idx: 1, kind: 'blank', rows: 6, cols: 4,
+          header: ['추진전략', '중점추진사업', '세부사업', '소관부서'],
+          grid: [['추진전략', '중점추진사업', '세부사업', '소관부서'],
+            ['', '', '', ''], ['', '', '', ''], ['', '', '', ''], ['', '', '', ''], ['', '', '', '']],
+          colWidths: [25, 30, 30, 15], required: true,
+        },
+        {
+          idx: 2, kind: 'example', rows: 6, cols: 4,
+          header: ['추진전략', '중점추진사업', '세부사업', '소관부서'],
+          grid: [['추진전략', '중점추진사업', '세부사업', '소관부서'],
+            ['돌봄 강화', '통합돌봄 확대', '재가 돌봄 지원', '복지정책과'],
+            ['돌봄 강화', '통합돌봄 확대', '주거 개보수', '주택과'],
+            ['', '', '', ''], ['', '', '', ''], ['', '', '', '']],
+          colWidths: [25, 30, 30, 15], required: false,
+        },
+        {
+          idx: 3, kind: 'note', rows: 1, cols: 1,
+          header: ['※ (참조) 세부사업 및 세부과업의 차이'],
+          grid: [['※ (참조) 세부사업 및 세부과업의 차이']],
+          colWidths: [100], required: false,
+        },
+      ],
+      limits: [
+        { text: '추진전략(5개 이내)', scope: '추진전략', op: 'max', n: 5, unit: '개' },
+        { text: '세부사업(3개 이상)', scope: '세부사업', op: 'min', n: 3, unit: '개' },
+        { text: '협의체 위원 10명 이상', scope: '협의체 위원', op: 'min', n: 10, unit: '명' },
+      ],
+      fixed: false, markers: ['○', '▪', '-'],
+    },
+    {
+      id: '01-가-1', depth: 2, no: '1', title: '전략체계도', page: 14,
+      parent: '01-가', children: ['01-가-1-(1)'],
+      howto: null, forms: [], limits: [], fixed: true, markers: ['○'],
+    },
+    {
+      id: '01-가-1-(1)', depth: 3, no: '(1)', title: '전략체계 도표 작성', page: null,
+      parent: '01-가-1', children: [],
+      howto: null, forms: [], limits: [], fixed: false, markers: [],
+    },
+    {
+      id: '01-나', depth: 1, no: '나.', title: '성과지표 및 목표', page: 20,
+      parent: '01', children: [],
+      howto: {
+        purpose: null, method: null,
+        raw: '◆ 작성 취지 및 방법 ◆\n성과지표는 사업별로 한 개 이상 설정하고 연도별 목표치를 함께 제시한다.',
+        chars: 56,
+      },
+      forms: [
+        {
+          idx: 2, kind: 'blank', rows: 4, cols: 3,
+          header: ['성과지표 명\n(단위)', '지표정의', '연도별 목표'],
+          grid: [['성과지표 명\n(단위)', '지표정의', '연도별 목표'], ['', '', ''], ['', '', ''], ['', '', '']],
+          colWidths: [30, 40, 30], required: true,
+        },
+        {
+          idx: 0, kind: 'blank', rows: 3, cols: 2,
+          header: ['구분', '내용'],
+          grid: [['구분', '내용'], ['', ''], ['', '']],
+          colWidths: [30, 70], required: true,
+        },
+      ],
+      limits: [], fixed: false, markers: ['○'],
+    },
+    {
+      id: '02', depth: 0, no: '제2절', title: '지역사회보장 여건 분석', page: 30,
+      parent: null, children: [],
+      howto: null, forms: [], limits: [], fixed: false, markers: [],
+    },
+  ],
+};
+
+mkdirSync(fileURLToPath(new URL('./fixtures/', import.meta.url)), { recursive: true });
+writeFileSync(fileURLToPath(FIXTURE), JSON.stringify(SAMPLE, null, 2) + '\n');
 
 let fails = 0, checks = 0;
 function ok(cond, msg) {

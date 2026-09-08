@@ -243,8 +243,14 @@ export function parseInput(text, formLike) {
         if (!part.trim() || !Number.isFinite(value)) { bad = true; break; }
         values.push(value);
       }
+      const total = values.reduce((a, b) => a + b, 0);
       if (bad) {
         warn(`${ln}행: {cols=…}의 숫자를 읽지 못했다 → 균등 분배`);
+        pendCols = null;
+      } else if (!(total > 0)) {
+        // 합이 0이면 비율을 나눌 수 없다. 그냥 두면 셀 너비가 NaN이 되어
+        // 한글이 열지 못하는 문서가 조용히 나간다
+        warn(`${ln}행: {cols=…}의 합이 0이라 비율을 낼 수 없다 → 균등 분배`);
         pendCols = null;
       } else {
         pendCols = values;
@@ -606,10 +612,11 @@ export function tableXml(item, formLike, roman = null) {
   const inMargin = spec.in_margin || { left: 141, right: 141, top: 141, bottom: 141 };
 
   const ncols = item.rows[0].length;
+  const pctTotal = item.colPct ? item.colPct.reduce((a, b) => a + b, 0) : 0;
   let widths;
-  if (item.colPct) {
-    const total = item.colPct.reduce((a, b) => a + b, 0);
-    widths = item.colPct.map((p) => Math.trunc(width * p / total));
+  // 합이 0·음수·NaN이면 나눌 수 없다. 균등 분배로 물러선다(NaN 너비 금지)
+  if (item.colPct && pctTotal > 0) {
+    widths = item.colPct.map((p) => Math.trunc(width * p / pctTotal));
   } else {
     widths = Array(ncols).fill(Math.floor(width / ncols));
   }
@@ -680,6 +687,7 @@ export class Numbering {
     }
     if (kind === 'AUTO_ROMAN') return `${ROMAN[(n - 1) % ROMAN.length]}. `;
     if (kind === 'AUTO_NUM') return `${n}. `;
+    if (kind === 'AUTO_PAREN') return `${n}) `;
     if (kind === 'AUTO_ALPHA') return `${String.fromCharCode(65 + ((n - 1) % 26))}. `;
     if (kind === 'AUTO_CIRCLED') return `${CIRCLED[(n - 1) % CIRCLED.length]} `;
     if (kind === 'AUTO_HANGUL') return `${HANGUL_ORDER[(n - 1) % HANGUL_ORDER.length]}. `;
@@ -699,6 +707,7 @@ export function buildBody(parsed, formLike, roman = null, imageBank = null) {
   const numbering = new Numbering(form);
   const images = [];
   const warnings = [];
+  const nonce = placeholderNonce();
   let noteNo = 1;
   const out = [];
 
@@ -714,7 +723,7 @@ export function buildBody(parsed, formLike, roman = null, imageBank = null) {
       continue;
     }
     if (item.kind === 'image') {
-      out.push(imageParagraph(item, form, images, imageBank, warnings));
+      out.push(imageParagraph(item, form, images, imageBank, warnings, nonce));
       stats['그림'] += 1;
       continue;
     }
@@ -786,7 +795,14 @@ function imageExt(name, data) {
   return '.png';
 }
 
-function imageParagraph(item, form, images, imageBank, warnings) {
+/**
+ * 자리표는 원고 글자와 겹치면 안 된다. 겹치면 사용자가 적은 글이 그림으로
+ * 바뀌어 나간다. 빌드마다 난수 토막을 섞어 겹칠 길을 막는다.
+ */
+const placeholderNonce = () => Math.floor(Math.random() * 0xffffffff)
+  .toString(36).toUpperCase();
+
+function imageParagraph(item, form, images, imageBank, warnings, nonce) {
   const [style, para, char] = form.refs('table_wrap');
   const data = imageBank ? imageBank.get(item.name) : undefined;
   if (!data) {
@@ -799,13 +815,14 @@ function imageParagraph(item, form, images, imageBank, warnings) {
   const targetW = mmToUnit(IMAGE_WIDTH_MM);
   const targetH = (wPx && hPx) ? pyRound(targetW * hPx / wPx) : pyRound(targetW * 0.75);
   const idx = images.length;
+  const token = `__IMAGE_PLACEHOLDER_${nonce}_${idx}__`;
   images.push({
     id: '', ext, data, width: targetW, height: targetH,
-    mediaType: MEDIA_TYPES[ext] || 'image/png',
+    mediaType: MEDIA_TYPES[ext] || 'image/png', token,
   });
   return `<hp:p id="0" paraPrIDRef="${para}" styleIDRef="${style}" `
     + 'pageBreak="0" columnBreak="0" merged="0">'
-    + `<hp:run charPrIDRef="${char}"><hp:t>__IMAGE_PLACEHOLDER_${idx}__</hp:t>`
+    + `<hp:run charPrIDRef="${char}"><hp:t>${token}</hp:t>`
     + '</hp:run></hp:p>';
 }
 
@@ -851,7 +868,8 @@ export function replaceImagePlaceholders(xml, images, treatAsChar = true) {
       + 'vertOffset="0" horzOffset="0"/>'
       + '<hp:outMargin left="0" right="0" top="0" bottom="0"/>'
       + '</hp:pic>';
-    out = out.split(`<hp:t>__IMAGE_PLACEHOLDER_${idx}__</hp:t>`).join(pic);
+    const token = img.token || `__IMAGE_PLACEHOLDER_${idx}__`;
+    out = out.split(`<hp:t>${token}</hp:t>`).join(pic);
   });
   return out;
 }
@@ -969,7 +987,9 @@ export function checkDoubleBullets(sectionXml, formLike) {
     if (!auto.has(paraId)) continue;
     const text = [...m[2].matchAll(/<hp:t>([^<]*)<\/hp:t>/g)]
       .map((t) => t[1]).join('').replace(/^\s+/, '');
-    if (leadIn(text, BULLET_CHARS)) {
+    // 빈 문단은 이중 기호가 아니다. 파이썬 `text[:1] in "…"`이 빈 글자에 참을
+    // 내주는 탓에 멀쩡한 원고가 통째로 막히던 자리다
+    if (text && leadIn(text, BULLET_CHARS)) {
       errs.push(`[이중 기호] 한글이 '${auto.get(paraId)}'를 붙이는 문단인데 `
         + `텍스트도 기호로 시작한다: ${JSON.stringify(text.slice(0, 24))} `
         + '→ 본문에서 기호를 빼거나 글머리표를 한글에 맡길 것');
@@ -1062,7 +1082,19 @@ function utf16le(text) {
  * @param {Object} [opts] `{images: Map<string,Uint8Array>, chapter, bullets}`
  * @returns {Promise<{bytes: Uint8Array, issues: string[], warnings: string[]}>}
  */
-export async function buildForm(templateBytes, formLike, text, opts = {}) {
+//: 각주·표 일련번호가 모듈 하나에 얹혀 있다. 두 빌드가 겹치면 서로의 번호를
+//: 가져가 같은 원고가 다른 문서를 낸다. 한 번에 하나씩만 돌린다
+let buildQueue = Promise.resolve();
+
+export function buildForm(templateBytes, formLike, text, opts = {}) {
+  const run = buildQueue.then(
+    () => buildFormOnce(templateBytes, formLike, text, opts),
+    () => buildFormOnce(templateBytes, formLike, text, opts));
+  buildQueue = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+async function buildFormOnce(templateBytes, formLike, text, opts) {
   resetSequences();
   const form = new Form(formLike);
   const chosen = form.applyBulletSource(opts.bullets || 'auto');
