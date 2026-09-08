@@ -121,6 +121,35 @@ function resolve(node) {
   };
 }
 
+
+/* 빈 양식·체계도에 짝이 되는 안내서 작성례를 찾는다.
+   안내서는 빈 양식과 채운 예시를 나란히 두는데, 둘이 다른 마디로 갈릴 때가 있다
+   (04-다 / 04-다#2). 그래서 같은 행·열 골격을 문서 차례상 가장 가까운 데서 고른다. */
+let exIndex = null;
+function exampleFor(node, form) {
+  if (!S.catalog) return null;
+  if (!exIndex) {
+    exIndex = [];
+    S.catalog.nodes.forEach((n, order) => {
+      for (const f of (n.forms || [])) {
+        if (f.kind === 'example') exIndex.push({ order, node: n, form: f });
+      }
+    });
+  }
+  const mine = S.catalog.nodes.findIndex((n) => n.id === (node._from ? node._from.id : node.id));
+  const same = exIndex.filter((e) => e.form.rows === form.rows && e.form.cols === form.cols);
+  if (!same.length) return null;
+  return same.reduce((a, b) =>
+    Math.abs(b.order - mine) < Math.abs(a.order - mine) ? b : a);
+}
+
+/* 표 격자를 파이프 표 글로 눕힌다(프롬프트·미리보기 공용) */
+function gridText(grid, cols, maxRows) {
+  const rows = (grid || []).slice(0, maxRows || 12);
+  return rows.map((r) => '| ' + Array.from({ length: cols },
+    (_, c) => cell(r[c] || '')).join(' | ') + ' |').join('\n');
+}
+
 function selectSection(id) {
   const raw = findSection(S.catalog, id);
   if (!raw) return;
@@ -164,12 +193,14 @@ function selectSection(id) {
       t.appendChild(tr);
     });
     w.appendChild(t); fbox.appendChild(w);
+    addExample(fbox, node, f);
   });
   if (!forms.length && !layouts.length) {
     fbox.appendChild(el('p', 'note', '이 마디에 고정된 표 양식은 없다. 서술형으로 쓴다.'));
   }
   layouts.forEach((f, i) => {
     fbox.appendChild(el('div', 'formcap', `체계도 ${i + 1} — ${f.rows}행 ${f.cols}열`));
+    addExample(fbox, node, f);
     fbox.appendChild(el('p', 'note', f.xml
       ? '칸을 병합해 그린 체계도라 파이프 표로 받아쓸 수 없다. 안내서 원본 표를 칸 병합·테두리째 '
         + '그대로 옮겨 넣으므로, 산출한 hwpx를 한글에서 열어 칸의 글자만 고치면 된다.'
@@ -179,6 +210,30 @@ function selectSection(id) {
   $('#w-make').disabled = !$('#w-draft').value.trim();
   $('#r-sec').value = id;
   $('#c-sec').value = id;
+}
+
+/* 안내서 작성례를 접었다 펼 수 있게 붙인다 */
+function addExample(host, node, form) {
+  const hit = exampleFor(node, form);
+  if (!hit) return;
+  const d = el('details', 'exbox');
+  const sm = el('summary', null,
+    `안내서 작성례 보기 <span class="cd">— ${esc(hit.node.no || '')} ${esc(hit.node.title)}</span>`);
+  d.appendChild(sm);
+  const w = el('div', 'formprev');
+  const t = el('table');
+  (hit.form.grid || []).slice(0, 12).forEach((row, r) => {
+    const tr = el('tr');
+    for (let c = 0; c < hit.form.cols; c++) {
+      tr.appendChild(el(r === 0 ? 'th' : 'td', null, esc(cell(row[c] || '')) || '&nbsp;'));
+    }
+    t.appendChild(tr);
+  });
+  w.appendChild(t); d.appendChild(w);
+  if ((hit.form.grid || []).length > 12) {
+    d.appendChild(el('p', 'note', `${hit.form.rows}행 중 앞 12행만 보인다.`));
+  }
+  host.appendChild(d);
 }
 
 /* ───────── 첨부파일 ───────── */
@@ -226,6 +281,19 @@ function renderFiles() {
 function assemblePrompt() {
   if (!S.wSection) return null;
   const parts = [promptFor(S.wSection)];
+  // 안내서 작성례는 '이 정도 알갱이로 쓰라'는 가장 분명한 본보기다
+  const shows = [];
+  for (const f of (S.wSection.forms || []).filter((x) => x.kind === 'blank' || x.kind === 'layout')) {
+    const hit = exampleFor(S.wSection, f);
+    if (!hit || shows.some((x) => x.form === hit.form)) continue;
+    shows.push(hit);
+  }
+  if (shows.length) {
+    parts.push('[안내서 작성례]\n' +
+      '안내서가 보여 주는 채운 예시다. 값은 그대로 베끼지 말고 우리 지역 사정으로 바꿔 쓴다.\n' +
+      shows.map((h, i) => `작성례 ${i + 1} (${h.form.rows}행 ${h.form.cols}열)\n`
+        + gridText(h.form.grid, h.form.cols, 12)).join('\n\n').slice(0, 12000));
+  }
   const req = $('#w-prompt').value.trim();
   const src = $('#w-src').value.trim();
   if (req) parts.push('[담당자 요청]\n' + req);
