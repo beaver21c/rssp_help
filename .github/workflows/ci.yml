@@ -1,0 +1,45 @@
+name: 시험
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+
+      - name: hwpx-studio 설치(파이썬 대조용)
+        run: pip install -q "hwpx-studio" || pip install -q "python-hwpx>=6.2,<7"
+
+      - name: 카탈로그·템플릿 검사
+        run: python3 tests/test_catalog.py
+
+      - name: 모듈 시험
+        run: |
+          node tests/test_form_parity.mjs
+          node tests/test_attach.mjs
+          node tests/test_indicator.mjs
+          node tests/test_catalog_js.mjs
+          node tests/test_gemini.mjs
+
+      - name: 브라우저 통합 시험
+        run: |
+          npm i -D playwright@1.49.1
+          npx playwright install --with-deps chromium
+          node tests/test_e2e.mjs
+
+      - name: 산출물 올리기
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 시험-산출물
+          path: tests/out/
+          if-no-files-found: ignore
