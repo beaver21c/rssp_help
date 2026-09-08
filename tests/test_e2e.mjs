@@ -183,13 +183,44 @@ page.on('pageerror', (e) => consoleErrs.push('pageerror: ' + e.message));
 /* 템플릿 원본 해시(보존 검사용) */
 const tplBytes = new Uint8Array(fs.readFileSync(path.join(APP, 'data/template.hwpx')));
 const tplParts = await unzipFile(tplBytes);
-const tplHash = {};
-for (const k of ['Contents/header.xml', 'Contents/section0.xml', 'Contents/section1.xml',
-  'Contents/masterpage0.xml', 'Contents/masterpage2.xml', 'settings.xml']) {
-  if (tplParts.has(k)) tplHash[k] = await sha(tplParts.get(k));
-}
-const BODY = JSON.parse(fs.readFileSync(path.join(APP, 'data/form.json'), 'utf8')).section
+/* 산출물이 템플릿과 같아야 하는 파일은 **표지를 붙였는가**에 따라 갈린다.
+     표지를 붙인 산출물(제1장) — 앞 구역·바탕쪽·settings 까지 통째로 그대로
+     표지를 뗀 산출물(그 밖)   — 앞 구역과 그 바탕쪽은 아예 없고, settings 의
+                                커서 위치 한 줄만 첫 문단으로 되돌아간다
+   header.xml 과 본문 바탕쪽(masterpage2)은 어느 쪽이든 한 바이트도 달라지면 안 된다. */
+const hashOf = async (keys) => {
+  const out = {};
+  for (const k of keys) if (tplParts.has(k)) out[k] = await sha(tplParts.get(k));
+  return out;
+};
+const ALWAYS_HASH = await hashOf(['Contents/header.xml', 'Contents/masterpage2.xml']);
+const FRONT_HASH = await hashOf(['Contents/section0.xml', 'Contents/section1.xml',
+  'Contents/masterpage0.xml', 'settings.xml']);
+const DROPPED = ['Contents/section1.xml', 'Contents/masterpage0.xml'];
+
+const RAW_BODY = JSON.parse(fs.readFileSync(path.join(APP, 'data/form.json'), 'utf8')).section
   || 'Contents/section2.xml';
+/* 표지를 떼면 본문 구역이 맨 앞 번호로 앞당겨진다 */
+const bodyPath = (front) => (front ? RAW_BODY : 'Contents/section0.xml');
+
+/* 이 마디에 표지가 붙는가 — 화면 규칙(cover.js wantsFront)과 같은 판단 */
+const wantsCover = (id) => /^0*1(?:[-_]|$)/.test(String(id || ''));
+
+/** 산출물이 서식을 지켰는지 본다. front 는 표지를 붙인 산출물인가. */
+async function checkKept(parts, front, label) {
+  let keep = true;
+  const want = { ...ALWAYS_HASH, ...(front ? FRONT_HASH : {}) };
+  for (const [k, h] of Object.entries(want)) {
+    const got = parts.has(k) ? await sha(parts.get(k)) : '(없음)';
+    if (got !== h) { keep = false; ok(false, `[${label}] ${k} 가 템플릿과 달라졌다`); }
+  }
+  if (!front) {
+    for (const k of DROPPED) {
+      if (parts.has(k)) { keep = false; ok(false, `[${label}] 표지 구역 ${k} 이 떨어지지 않았다`); }
+    }
+  }
+  return ok(keep, `[${label}] 서식 보존 — ${front ? '표지·제출문까지 해시 일치' : '표지는 떼고 서식은 해시 일치'}`);
+}
 
 head('화면 열기');
 await page.goto(base, { waitUntil: 'networkidle' });
@@ -247,15 +278,11 @@ for (const node of targets) {
   catch (e) { ok(false, `[${label}] zip 판독`, e.message); summary.push({ id: node.id, ok: false }); continue; }
 
   ok(txt(parts.get('mimetype')) === 'application/hwp+zip', `[${label}] mimetype`);
-  let keep = true;
-  for (const [k, h] of Object.entries(tplHash)) {
-    const got = parts.has(k) ? await sha(parts.get(k)) : '(없음)';
-    if (got !== h) { keep = false; ok(false, `[${label}] ${k} 가 템플릿과 달라졌다`); }
-  }
-  ok(keep, `[${label}] 서식·표지·제출문 보존(해시 일치)`);
+  const front = wantsCover(node.id);
+  await checkKept(parts, front, label);
 
-  const secXml = txt(parts.get(BODY) || new Uint8Array());
-  ok(secXml.length > 0, `[${label}] 본문 구역이 있다`);
+  const secXml = txt(parts.get(bodyPath(front)) || new Uint8Array());
+  ok(secXml.length > 0, `[${label}] 본문 구역이 있다`, `찾은 자리 ${bodyPath(front)}`);
   ok(!/<hp:p\b[^>]*>\s*<\/hp:p>\s*$/.test(secXml) || secXml.includes('<hp:t>'),
     `[${label}] 본문에 글이 들어 있다`);
   ok(secXml.includes(node.title.slice(0, 8)) || secXml.includes('<hp:t>'),
@@ -345,9 +372,16 @@ for (const c of CASES) {
 
   const nRows = await page.locator('#r-table tbody tr').count();
   ok(nRows >= 20, `${code} 지표 20개 이상 산출`, `${nRows}개`);
-  ok(await page.locator('#r-chart img').count() === 1, `${code} 그래프 그려짐`);
+  /* 22개 지표는 한 장에 다 넣으면 세로가 한글 한 쪽을 넘긴다. 11+11 두 장으로 갈라야 한다 */
+  const nCharts = await page.locator('#r-chart img').count();
+  ok(nCharts === 2, `${code} 비교 그래프가 2장으로 갈렸다(11+11)`, `${nCharts}장`);
+  const nTrend = await page.locator('#t-chart img').count();
+  ok(nTrend === 1, `${code} 연도별 추이 그래프가 그려졌다`, `${nTrend}장`);
   const drafted = await page.inputValue('#r-draft');
   ok(drafted.includes('지역사회보장지표'), `${code} 원고에 표주 있음`);
+  ok(drafted.includes('#### 연도별 추이'), `${code} 원고에 추이 마디가 붙었다`);
+  ok(/비슷한 수준인 지표|뚜렷이 다른 지표/.test(drafted),
+    `${code} 원고가 차이 큰 지표와 비슷한 지표를 갈라 썼다`);
 
   const dl = page.waitForEvent('download', { timeout: 60000 });
   await page.click('#r-make');
@@ -357,13 +391,18 @@ for (const c of CASES) {
   if (!ok(!!f, `${code} 절 hwpx 산출`, e2)) continue;
 
   const parts = await unzipFile(new Uint8Array(fs.readFileSync(f)));
-  const sec = txt(parts.get(BODY) || new Uint8Array());
+  /* 지역여건은 장에 속하지 않는 산출물이라 표지를 붙이지 않는다 */
+  await checkKept(parts, false, `지역여건 ${code}`);
+  const sec = txt(parts.get(bodyPath(false)) || new Uint8Array());
   const bin = [...parts.keys()].filter((k) => k.startsWith('BinData/') && /\.(png|jpe?g)$/i.test(k));
-  ok(sec.includes('<hp:pic'), `${code} 그림(hp:pic)이 본문에 들어갔다`);
-  ok(bin.length >= 1, `${code} BinData 그림 엔트리 존재`, bin.join(', '));
+  const pics = (sec.match(/<hp:pic\b/g) || []).length;
+  ok(pics === 3, `${code} 그림 3장(비교 2 + 추이 1)이 본문에 들어갔다`, `${pics}장`);
+  ok(bin.length >= 3, `${code} BinData 그림 엔트리 3개 이상`, bin.join(', '));
   const hpf = txt(parts.get('Contents/content.hpf') || new Uint8Array());
-  const idm = (sec.match(/binaryItemIDRef="([^"]+)"/) || [])[1];
-  ok(!!idm && hpf.includes(`id="${idm}"`), `${code} content.hpf 매니페스트에 그림 항목 있음`, `id=${idm}`);
+  const ids = [...new Set([...sec.matchAll(/binaryItemIDRef="([^"]+)"/g)].map((m) => m[1]))];
+  const lost = ids.filter((id) => !hpf.includes(`id="${id}"`));
+  ok(ids.length >= 3 && lost.length === 0,
+    `${code} content.hpf 매니페스트에 그림 ${ids.length}개가 모두 적혔다`, lost.join(', ') || `id=${ids}`);
   ok(sec.includes('xmlns:hc='), `${code} hc 네임스페이스 선언됨`);
   ok(consoleErrs.length === 0, `${code} 콘솔 오류 없음`, consoleErrs.join(' | '));
 }
@@ -391,23 +430,60 @@ if (made.length) {
   const back = await page.inputValue('#c-draft');
   ok(back.trim().length > 0, '되돌린 원고가 비어 있지 않다', `${back.length}자`);
 
-  const dl = page.waitForEvent('download', { timeout: 60000 });
-  await page.click('#c-make');
-  try {
-    const d = await dl;
-    const f = path.join(OUT, '재조판.hwpx');
-    await d.saveAs(f);
-    const parts = await unzipFile(new Uint8Array(fs.readFileSync(f)));
-    ok(txt(parts.get('mimetype')) === 'application/hwp+zip', '재조판 산출물이 유효한 hwpx');
-    for (const [k, h] of Object.entries(tplHash)) {
-      ok(parts.has(k) && (await sha(parts.get(k))) === h, `재조판 후에도 ${k} 보존`);
+  /* 절을 안 고르면 표지 없이, 제1장 절을 고르면 표지까지 — 두 갈래를 다 본다 */
+  const remake = async (secId, front, tag) => {
+    await page.selectOption('#c-sec', secId);
+    const dl = page.waitForEvent('download', { timeout: 60000 });
+    await page.click('#c-make');
+    try {
+      const d = await dl;
+      const f = path.join(OUT, `재조판_${tag}.hwpx`);
+      await d.saveAs(f);
+      const parts = await unzipFile(new Uint8Array(fs.readFileSync(f)));
+      ok(txt(parts.get('mimetype')) === 'application/hwp+zip', `재조판(${tag}) 산출물이 유효한 hwpx`);
+      await checkKept(parts, front, `재조판 ${tag}`);
+      ok(txt(parts.get(bodyPath(front)) || new Uint8Array()).includes('<hp:t>'),
+        `재조판(${tag}) 본문 구역에 글이 있다`, `찾은 자리 ${bodyPath(front)}`);
+    } catch (e) {
+      ok(false, `재조판(${tag}) 산출`, (await page.textContent('#c-mstatus').catch(() => '')) || e.message);
     }
-  } catch (e) {
-    ok(false, '재조판 산출', (await page.textContent('#c-mstatus').catch(() => '')) || e.message);
-  }
+  };
+  await remake('', false, '절없음');
+  const first = await page.locator('#c-sec option').evaluateAll(
+    (opts) => opts.map((o) => o.value).find((v) => /^0*1(?:[-_]|$)/.test(v)) || '');
+  if (first) await remake(first, true, '제1장');
+  else ok(false, '제1장 절을 고를 수 없다');
   ok(consoleErrs.length === 0, '양식 점검 콘솔 오류 없음', consoleErrs.join(' | '));
 } else {
   ok(false, '되돌릴 산출물이 없다');
+}
+
+/* ───────── 개발도구용 스킬 꾸러미 ───────── */
+head('스킬 꾸러미 — 화면에서 내려받기');
+{
+  consoleErrs.length = 0;
+  await page.click('.tab[data-tab="check"]');
+  const dl = page.waitForEvent('download', { timeout: 60000 });
+  await page.click('#c-skill');
+  try {
+    const d = await dl;
+    ok(d.suggestedFilename().endsWith('.zip'), '.zip 으로 내려온다', d.suggestedFilename());
+    const f = path.join(OUT, '스킬꾸러미.zip');
+    await d.saveAs(f);
+    const parts = await unzipFile(new Uint8Array(fs.readFileSync(f)));
+    const want = ['SKILL.md', 'AGENTS.md', 'build.mjs', 'lib/hwpx-form.js', 'assets/template.hwpx'];
+    const missing = want.filter((w) => ![...parts.keys()].some((k) => k.endsWith('/' + w)));
+    ok(missing.length === 0, `꾸러미에 핵심 파일 ${want.length}개가 다 있다`, missing.join(', '));
+    const st = await page.textContent('#c-sstatus');
+    ok(/내려받음/.test(st), '내려받았다고 알린다', st);
+  } catch (e) {
+    ok(false, '스킬 꾸러미 내려받기', (await page.textContent('#c-sstatus').catch(() => '')) || e.message);
+  }
+  await page.click('#c-skillhelp');
+  await page.waitForTimeout(60);
+  ok(await page.locator('#sModal.on').count() === 1, '[적용 방법] 창이 열린다');
+  await page.click('#s-close');
+  ok(consoleErrs.length === 0, '스킬 꾸러미 콘솔 오류 없음', consoleErrs.join(' | '));
 }
 
 /* ───────── API 키 설정 띠 ─────────

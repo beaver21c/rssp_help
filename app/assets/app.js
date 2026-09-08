@@ -7,13 +7,18 @@ import { loadCatalog, findSection, sectionList, promptFor, blankForms, checkLimi
 import { buildForm, parseInput, lintParsed } from './hwpx-form.js';
 import { extractAttachment, SUPPORTED } from './attach.js';
 import { loadIndex, groupCodes, analyze, narrate, KEY_CODES } from './indicator.js';
-import { renderComparisonChart } from './chart.js';
+import { renderComparisonChart, chunkRows, PER_SHEET } from './chart.js';
+import {
+  analyzeTrend, renderTrendChart, narrateTrend, PER_SHEET as TREND_PER_SHEET,
+} from './trend.js';
 import * as gem from './gemini.js';
 import * as quota from './quota.js';
 import * as ws from './workspace.js';
 import { CARD_FILE, cardFrom, mergeCard, pickCards, contextBlock } from './context.js';
 import { readBodyText } from './docread.js';
 import { injectRawBlocks, token as layoutToken, usedKeys } from './rawblock.js';
+import { stripFront, wantsFront } from './cover.js';
+import { buildSkillPack, fetchRead, SKILL_NAME } from './skillpack.js';
 
 /* ───────── 공용 ───────── */
 const $ = (s) => document.querySelector(s);
@@ -62,7 +67,8 @@ async function deliver(bytes, name) {
 const S = {
   catalog: null, form: null, template: null,
   wSection: null, wFiles: [], wDraft: '',
-  regions: null, indexCat: null, rows: null, rPng: null,
+  regions: null, indexCat: null, rows: null, rPng: null, rPngs: [],
+  tPngs: [], tSeries: null,
   cDoc: null, cName: '',
   cards: [], wsPending: null,
 };
@@ -217,6 +223,10 @@ function selectSection(id) {
   if (!raw) return;
   const node = resolve(raw);
   S.wSection = node;
+  // 절을 바꾸면 표지 여부는 그 절의 규칙으로 되돌린다(앞 절에서 만진 값이 따라오지 않게)
+  const cov = $('#w-cover');
+  cov.dataset.touched = '';
+  cov.checked = wantsFront(id);
   $$('#w-tree .tnode').forEach((b) => b.classList.toggle('on', b.dataset.id === id));
 
   const path = [];
@@ -554,15 +564,39 @@ async function layoutXml(key) {
   return xml;
 }
 
-async function makeDoc(text, images) {
+/**
+ * 마커 원고 → hwpx.
+ * @param front 표지·제출문을 붙이는가. 부르는 쪽이 정해서 넘긴다 —
+ *   화면의 [앞표지 넣기]는 **절 집필 탭 것**이라, 지역여건이나 양식 점검이
+ *   그 값을 들여다보면 다른 탭에서 만진 값이 따라붙는다.
+ */
+async function makeDoc(text, images, front) {
   const res = await buildForm(S.template, S.form, text, { images: images || new Map() });
+  let bytes = res.bytes;
+  let layouts = [];
   const keys = usedKeys(text);
-  if (!keys.length) return { ...res, layouts: [] };
-  const blocks = new Map();
-  for (const k of keys) blocks.set(k, await layoutXml(k));
-  const out = await injectRawBlocks(res.bytes, S.form.section, blocks);
-  if (out.missing.length) throw new Error(`도식을 넣지 못했다: ${out.missing.join(', ')}`);
-  return { ...res, bytes: out.bytes, layouts: out.placed };
+  if (keys.length) {
+    const blocks = new Map();
+    for (const k of keys) blocks.set(k, await layoutXml(k));
+    const out = await injectRawBlocks(bytes, S.form.section, blocks);
+    if (out.missing.length) throw new Error(`도식을 넣지 못했다: ${out.missing.join(', ')}`);
+    bytes = out.bytes;
+    layouts = out.placed;
+  }
+  // 표지·제출문은 제1장 산출물에만 남긴다. 절마다 딸려 나오면 한글에서 매번 지워야 한다.
+  if (!front) bytes = await stripFront(bytes, S.form.section);
+  return { ...res, bytes, layouts, front: !!front };
+}
+
+/* 절 집필 탭에서 표지를 붙일 것인가. 화면에서 손으로 뒤집을 수 있게 두되(막다른 길 방지)
+   기본값은 마디 번호로 정한다 — 제1장이면 붙이고 그 밖은 뗀다.
+   이 판단은 절 집필 탭에서만 쓴다. 다른 탭은 wantsFront()나 false 를 그대로 넘긴다. */
+function coverWanted(sectionId) {
+  const box = $('#w-cover');
+  if (box && box.dataset.touched === '1') return box.checked;
+  const on = wantsFront(sectionId);
+  if (box) box.checked = on;
+  return on;
 }
 
 /* ───────── 작업 폴더와 맥락 장부 ─────────
@@ -674,14 +708,17 @@ $('#ws-grant').onclick = async () => {
   }
 };
 
+/* 표지 체크는 사람이 한 번 만지면 그 선택이 우선한다(자동 규칙이 덮어쓰지 않게) */
+$('#w-cover').onchange = () => { $('#w-cover').dataset.touched = '1'; };
+
 /* ───────── 절 hwpx 산출 ───────── */
 $('#w-make').onclick = async () => {
   const text = $('#w-draft').value;
   if (!text.trim()) return;
   say('#w-mstatus', '문서 만드는 중…', 'busy');
   try {
-    const res = await makeDoc(text, new Map());
     const n = S.wSection;
+    const res = await makeDoc(text, new Map(), coverWanted(n ? n.id : ''));
     const where = await deliver(res.bytes, `${safeName((n ? (n.id + '_' + n.title) : '절'))}.hwpx`);
     const card = await noteCard(n, text);
     const bad = (res.issues || []).length;
@@ -725,6 +762,22 @@ function fillRegionSelects() {
   const pick = $('#r-pick'); pick.innerHTML = '';
   S.indexCat.items.forEach((i) => pick.add(new Option(`[${i.code}] ${i.name}`, i.code)));
   $('#r-set').onchange = () => { $('#r-pickbox').style.display = $('#r-set').value === 'pick' ? 'block' : 'none'; };
+
+  /* 추이 — 기간은 자료가 있는 연도 안에서만 고르게 한다 */
+  const years = (S.indexCat.years || []).slice().sort((a, b) => a - b);
+  const from = $('#t-from'); const to = $('#t-to');
+  from.innerHTML = ''; to.innerHTML = '';
+  years.forEach((y) => { from.add(new Option(`${y}년`, y)); to.add(new Option(`${y}년`, y)); });
+  /* 기본은 최근 8개 연도. 너무 길면 칸이 좁아 연도 눈금이 겹친다 */
+  from.value = String(years[Math.max(0, years.length - 8)] || years[0]);
+  to.value = String(years[years.length - 1] || '');
+  from.onchange = () => { if (Number(from.value) > Number(to.value)) to.value = from.value; };
+  to.onchange = () => { if (Number(to.value) < Number(from.value)) from.value = to.value; };
+
+  const tpick = $('#t-pick'); tpick.innerHTML = '';
+  S.indexCat.items.filter((i) => i.kind === '지표')
+    .forEach((i) => tpick.add(new Option(`[${i.code}] ${i.name}`, i.code)));
+  $('#t-on').onchange = () => { $('#t-box').hidden = !$('#t-on').checked; };
 }
 
 function fillSectionSelects() {
@@ -757,40 +810,121 @@ $('#r-run').onclick = async () => {
     renderTable(rows);
     say('#r-status', `${rows.length}/${codes.length}개 지표 산출`, 'ok');
 
+    /* 그림은 장을 나눈다. 22개를 한 장에 넣으면 세로 2,400px(약 294mm)이라
+       한글에서 두세 쪽에 걸쳐 잘린다. 12개 상한으로 고르게 갈라 11+11로 만든다 */
     say('#r-status', '그래프 그리는 중…', 'busy');
-    S.rPng = await renderComparisonChart(rows, { title: regionLabel(opts), basis: opts.basis, scale: 2 });
-    const box = $('#r-chart'); box.innerHTML = '';
-    const img = new Image();
-    img.src = URL.createObjectURL(new Blob([S.rPng], { type: 'image/png' }));
-    box.appendChild(img);
-    $('#r-ccnt').textContent = kb(S.rPng.length);
+    const sheets = chunkRows(rows, PER_SHEET);
+    S.rPngs = [];
+    for (let i = 0; i < sheets.length; i += 1) {
+      S.rPngs.push(await renderComparisonChart(sheets[i], {
+        title: regionLabel(opts), basis: opts.basis, scale: 2,
+        part: { index: i + 1, total: sheets.length },
+      }));
+    }
+    S.rPng = S.rPngs[0];
+    showCharts('#r-chart', S.rPngs);
+    $('#r-ccnt').textContent = sheets.length > 1
+      ? `${sheets.length}장 · ${kb(S.rPngs.reduce((a, p) => a + p.length, 0))}`
+      : kb(S.rPng.length);
 
-    $('#r-draft').value = narrate(rows, { ...opts, regionName: regionLabel(opts), regions: S.regions });
+    let text = narrate(rows, { ...opts, regionName: regionLabel(opts), regions: S.regions });
+
+    /* 연도별 추이 — 켜져 있으면 이어 붙인다 */
+    S.tPngs = []; S.tSeries = null;
+    let tail = '';
+    if ($('#t-on').checked) {
+      say('#r-status', '연도별 추이 산출 중…', 'busy');
+      try {
+        const chosen = Array.from($('#t-pick').selectedOptions).map((o) => o.value);
+        const series = await analyzeTrend({
+          region: opts.region, basis: opts.basis,
+          codes: chosen.length ? chosen : codes,
+          from: Number($('#t-from').value), to: Number($('#t-to').value),
+          limit: chosen.length ? 0 : TREND_PER_SHEET,
+        });
+        S.tSeries = series;
+        const tSheets = chunkRows(series, TREND_PER_SHEET);
+        for (let i = 0; i < tSheets.length; i += 1) {
+          S.tPngs.push(await renderTrendChart(tSheets[i], {
+            title: `연도별 추이 — ${regionLabel(opts)}`, basis: opts.basis,
+            regionName: regionLabel(opts), scale: 2,
+          }));
+        }
+        showCharts('#t-chart', S.tPngs);
+        $('#t-ccnt').textContent = `지표 ${series.length}개 · ${tSheets.length}장`;
+        text += '\n\n' + narrateTrend(series, { basis: opts.basis });
+        tail = ` · 추이 지표 ${series.length}개`;
+      } catch (e) {
+        /* 추이가 안 되어도 기본 분석은 이미 다 나왔다. 통째로 실패시키지 않는다 */
+        $('#t-chart').innerHTML = `<div class="empty">추이를 그리지 못했다 — ${esc(e.message)}</div>`;
+        $('#t-ccnt').textContent = '';
+        tail = ' · 추이 실패(' + e.message + ')';
+      }
+    } else {
+      $('#t-chart').innerHTML = '<div class="empty">추이 분석을 끄고 실행했다.</div>';
+      $('#t-ccnt').textContent = '';
+    }
+
+    $('#r-draft').value = text;
     $('#r-make').disabled = false; $('#r-png').disabled = false;
-    say('#r-status', `완료 · 지표 ${rows.length}개 · 비교집단 ${rows[0] ? rows[0].n : 0}개 지역`, 'ok');
+    say('#r-status', `완료 · 지표 ${rows.length}개 · 비교집단 ${rows[0] ? rows[0].n : 0}개 지역`
+      + (sheets.length > 1 ? ` · 그림 ${sheets.length}장` : '') + tail, 'ok');
   } catch (e) {
     say('#r-status', '실패 — ' + e.message, 'err');
   }
   btn.disabled = false;
 };
 
+/* 미리보기 칸에 그림 여러 장을 차례로 건다 */
+function showCharts(sel, pngs) {
+  const box = $(sel); box.innerHTML = '';
+  if (!pngs || !pngs.length) { box.innerHTML = '<div class="empty">—</div>'; return; }
+  pngs.forEach((png) => {
+    const img = new Image();
+    img.src = URL.createObjectURL(new Blob([png], { type: 'image/png' }));
+    box.appendChild(img);
+  });
+}
+
 /* 그림을 넣을 자리를 고른다.
    표 주(※)는 표 바로 아래에만 두는 줄이라, 그림 바로 뒤에 ※가 오면 검사에 걸린다.
-   그래서 첫 표 앞(표가 없으면 첫 ※ 앞)에 넣고, 그마저 없으면 맨 끝에 붙인다. */
-function insertImage(text, name) {
-  const lines = text.split('\n');
-  let at = lines.length;
-  for (let i = 0; i < lines.length; i++) {
+   그래서 첫 표 앞(표가 없으면 첫 ※ 앞)에 넣고, 그마저 없으면 맨 끝에 붙인다.
+   after 를 주면 그 글월이 처음 나오는 줄 뒤부터 자리를 찾는다(추이 그림용). */
+function insertPoint(lines, after) {
+  let start = 0;
+  if (after) {
+    const k = lines.findIndex((l) => l.includes(after));
+    if (k >= 0) start = k + 1;
+  }
+  for (let i = start; i < lines.length; i++) {
     const s = lines[i].trim();
     if (s.startsWith('|') || s.startsWith('{cols=') || s.startsWith('※')) {
-      at = i;
-      while (at > 0 && !lines[at - 1].trim()) at--;      // 앞의 빈 줄 위로
-      break;
+      let at = i;
+      while (at > start && !lines[at - 1].trim()) at--;   // 앞의 빈 줄 위로
+      return at;
     }
   }
-  lines.splice(at, 0, '', `![](${name})`, '');
+  return lines.length;
+}
+
+/* 그림 여러 장을 한 자리에 잇달아 넣는다.
+   장마다 폭 120mm·세로 150mm 남짓이라 한글이 알아서 다음 쪽으로 넘긴다
+   — 22개 지표를 11+11로 갈랐으면 두 쪽에 한 장씩 앉는다. */
+function insertImages(text, names, after) {
+  const list = (names || []).filter((n) => !text.includes(`![](${n})`));
+  if (!list.length) return text;
+  const lines = text.split('\n');
+  const at = insertPoint(lines, after);
+  const block = [];
+  for (const n of list) block.push('', `![](${n})`);
+  block.push('');
+  lines.splice(at, 0, ...block);
   return lines.join('\n').replace(/\n{3,}/g, '\n\n');
 }
+
+/* 이번 분석의 그림 이름 — 비교 그래프와 추이 그래프 */
+const chartNames = (n) => Array.from({ length: n }, (_, i) => `indicator${i + 1}.png`);
+const trendNames = (n) => Array.from({ length: n }, (_, i) => `trend${i + 1}.png`);
 
 function regionLabel(opts) {
   const r = S.regions.find((x) => x.code === opts.region);
@@ -818,22 +952,33 @@ const num = (v) => v == null || isNaN(v) ? '–'
     : Math.abs(v) >= 100 ? v.toFixed(1) : v.toFixed(2);
 
 $('#r-png').onclick = () => {
-  if (!S.rPng) return;
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([S.rPng], { type: 'image/png' }));
-  a.download = `지역여건_${safeName(regionLabel(S.rOpts))}.png`;
-  document.body.appendChild(a); a.click(); a.remove();
+  const all = [...(S.rPngs || []), ...(S.tPngs || [])];
+  if (!all.length) return;
+  const base = safeName(regionLabel(S.rOpts));
+  const names = [...chartNames((S.rPngs || []).length), ...trendNames((S.tPngs || []).length)];
+  all.forEach((png, i) => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([png], { type: 'image/png' }));
+    a.download = `지역여건_${base}_${names[i]}`;
+    document.body.appendChild(a); a.click(); a.remove();
+  });
 };
 
 $('#r-make').onclick = async () => {
   if (!S.rows) return;
   say('#r-mstatus', '문서 만드는 중…', 'busy');
   try {
-    const IMG = 'indicator.png';
+    const cn = chartNames((S.rPngs || []).length);
+    const tn = trendNames((S.tPngs || []).length);
     let text = $('#r-draft').value;
-    if (!text.includes(`![](${IMG})`)) text = insertImage(text, IMG);
-    const res = await makeDoc(text, new Map([[IMG, S.rPng]]));
+    text = insertImages(text, cn);
+    if (tn.length) text = insertImages(text, tn, '#### 연도별 추이');
+    const bank = new Map();
+    cn.forEach((n, i) => bank.set(n, S.rPngs[i]));
+    tn.forEach((n, i) => bank.set(n, S.tPngs[i]));
     const sec = findSection(S.catalog, $('#r-sec').value);
+    /* 지역여건 분석은 장에 속하지 않는 산출물이라 표지를 붙이지 않는다 */
+    const res = await makeDoc(text, bank, false);
     const where = await deliver(res.bytes,
       `${safeName((sec ? sec.id + '_' : '') + '지역여건_' + regionLabel(S.rOpts))}.hwpx`);
     const card = await noteCard(sec ? resolve(sec) : null, text);
@@ -929,7 +1074,8 @@ $('#c-fix').onclick = async () => {
 $('#c-make').onclick = async () => {
   say('#c-mstatus', '양식 적용 중…', 'busy');
   try {
-    const res = await makeDoc($('#c-draft').value, new Map());
+    /* 다시 만들기는 고른 절의 규칙만 따른다(절 집필 탭에서 만진 값은 여기 안 온다) */
+    const res = await makeDoc($('#c-draft').value, new Map(), wantsFront($('#c-sec').value || ''));
     const where = await deliver(res.bytes,
       safeName(S.cName.replace(/\.hwpx$/i, '') + '_양식적용') + '.hwpx');
     say('#c-mstatus', `산출 완료 (${kb(res.bytes.length)})` + where, 'ok');
@@ -1122,6 +1268,28 @@ $('#k-force').onclick = () => {
   $('#k-oklbl').textContent = '확인을 건너뛰고 사용 중';
   $('#k-okwhy').textContent = '연결 확인이 통하지 않았다. 호출이 실패하면 각 화면의 상태줄에 사유가 뜬다';
   syncKey();
+};
+
+/* ───────── 개발도구용 스킬 꾸러미 ───────── */
+$('#c-skillhelp').onclick = () => $('#sModal').classList.add('on');
+$('#s-close').onclick = () => $('#sModal').classList.remove('on');
+
+$('#c-skill').onclick = async () => {
+  const btn = $('#c-skill'); btn.disabled = true;
+  say('#c-sstatus', '꾸러미 묶는 중…', 'busy');
+  try {
+    const bytes = await buildSkillPack(fetchRead);
+    const blob = new Blob([bytes], { type: 'application/zip' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${SKILL_NAME}.zip`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    say('#c-sstatus', `${SKILL_NAME}.zip 내려받음 (${kb(bytes.length)}) · [적용 방법]을 눌러 두는 자리를 볼 것`, 'ok');
+  } catch (e) {
+    say('#c-sstatus', '묶지 못했다 — ' + e.message, 'err');
+  }
+  btn.disabled = false;
 };
 
 /* ───────── 모달 닫기 ───────── */

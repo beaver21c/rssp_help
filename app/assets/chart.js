@@ -70,8 +70,27 @@ const VAL_X = 396;        // 우리 값·평균을 오른쪽 정렬하는 기준
 const PLOT_X0 = 436;
 const PLOT_X1 = W - PAD;
 
+/* 한 장(그림 한 개)에 넣는 지표 줄 수 상한.
+   그림은 한글에서 폭 120mm로 들어가므로 세로가 길어질수록 쪽을 넘긴다.
+   ROW 104 기준 12줄이면 980×1360(세로 약 167mm)이라 한 쪽에 머문다. */
+export const PER_SHEET = 12;
+
+/* 지표 줄을 장 단위로 자른다. 마지막 장만 짧게 남기지 않고 고르게 나눈다
+   — 22개를 12개 상한으로 자르면 12+10이 아니라 11+11이 된다. */
+export function chunkRows(rows, per) {
+  const list = Array.isArray(rows) ? rows : [];
+  const cap = Math.max(1, per || PER_SHEET);
+  if (list.length <= cap) return [list];
+  const sheets = Math.ceil(list.length / cap);
+  const size = Math.ceil(list.length / sheets);
+  const out = [];
+  for (let i = 0; i < list.length; i += size) out.push(list.slice(i, i + size));
+  return out;
+}
+
 /* layoutChart(rows, opts) — 그리기 명령 목록과 검사용 기하 정보를 만든다.
-   opts = { title, subtitle, basis, year, scale, width }
+   opts = { title, subtitle, basis, year, scale, width, part }
+   part = {index, total} 이면 머리글에 「1/2쪽」을 덧붙인다
    돌려주는 것
      { width, height, scale, background, font, ops:[…], rows:[…] }
    ops 원소
@@ -131,10 +150,11 @@ export function layoutChart(rows, opts) {
   /* 머리말 */
   const title = o.title ? `지역사회보장지표 — ${o.title}` : '지역사회보장지표 비교';
   T(PAD, 34, ellipsize(title, 17, headRoom), 17, COLORS.avg, 'left', { weight: 'bold', line: 'title' });
+  const part = o.part && o.part.total > 1 ? o.part : null;
   const sub = o.subtitle || [
     o.basis ? `${basisLabel(o.basis)} 비교` : null,
     o.year ? `${o.year}년 기준` : '지표별 최신연도 기준',
-    `지표 ${rows.length}개`,
+    `지표 ${rows.length}개` + (part ? ` (${part.index}/${part.total}쪽)` : ''),
   ].filter(Boolean).join(' · ');
   T(PAD, 55, ellipsize(sub, 11, width - PAD * 2), 11, COLORS.caption, 'left', { line: 'subtitle' });
   line(PAD, 66, width - PAD, 66, COLORS.rule, 1);

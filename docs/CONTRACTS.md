@@ -126,19 +126,99 @@ Row  = { code, name, unit, year, mine, avg, q1, q3, min, max, n, rank,
 - `type7`이 `null`인 지역(대구 군위군)은 유형별 비교에서 `peerType: null`
 - 사분위수는 선형보간(`(n-1)*p` 방식) — 기존 대시보드 `quantile()`과 동일해야 함
 
+**`narrate()` 원고 규칙** — 지표가 많을 때 전부 같은 무게로 쓰면 무엇이 문제인지 안 보인다.
+
+- 값이 큰 쪽·작은 쪽 3개씩을 먼저 세우고, 남은 지표를 비교집단 **Q1~Q3 구간**으로 가른다
+- 구간 **밖**(뚜렷이 다름) — 개별로 쓴다. 구간 **안**(비슷한 수준) — 이름만 한 줄로 묶는다
+- 끝에 「종합 진단과 정책 방향」 자리를 둔다. 값의 뜻과 정책은 자료만으로 나오지 않는다
+- **빈칸 표시(`○○○○`)는 줄 끝에 둔다.** 줄머리에 두면 한글이 붙이는 글머리표와 겹쳐
+  `checkDoubleBullets`의 [이중 기호]로 걸려 산출이 통째로 막힌다
+
 ## 5. `app/assets/chart.js` — Canvas 차트 → PNG
 
 외부 차트 라이브러리를 쓰지 않는다. `OffscreenCanvas` 또는 `<canvas>`에 직접 그린다.
 
 ```js
-export async function renderComparisonChart(rows, opts): Uint8Array   // PNG
+export const PER_SHEET = 12                                          // 한 장에 넣는 지표 줄 수 상한
+export function chunkRows(rows, per): Row[][]                        // 장 단위로 고르게 가른다
+export async function renderComparisonChart(rows, opts): Uint8Array  // PNG
 ```
+
+- `opts.part = {index, total}` 이면 머리글에 `(1/2쪽)`을 덧붙인다
+- `chunkRows`는 **마지막 장만 짧게 남기지 않는다** — 22개를 상한 12로 자르면 12+10이
+  아니라 11+11. 그림은 한글에서 폭 120mm로 들어가므로 12줄(세로 167mm)이 한 쪽에
+  들어가는 한계다. 22줄을 한 장에 넣으면 294mm라 쪽을 넘겨 잘린다
 
 - 행 구성: 왼쪽 지표명·단위·연도 / 가운데 우리 값·비교평균 / 오른쪽 분포 그래픽
 - 분포 그래픽 = Min~Max 위스커(양끝 캡) + IQR 사각형(Q1~Q3) + 평균 원 + 우리 지역 마름모
 - 색: 우리 지역 `#c0392b` / 평균 `#1a4f8a` / IQR `#a8c5ff` / 위스커 `#94a3b8` / 설명 `#64748b`
 - 배경 흰색 고정(인쇄용). `devicePixelRatio` 무시하고 `scale` 옵션(기본 2)으로 확대
 - 글꼴 `"Malgun Gothic","Apple SD Gothic Neo",sans-serif`
+
+## 5-2. `app/assets/trend.js` — 연도별 추이
+
+그림 구성은 `kihasa-indicator-new`의 「연도별 추이 분석」 탭을 따른다. 그쪽은 Plotly를
+쓰고 이 도구는 Canvas에 직접 그린다. **색·선 종류·범례 구성만 같게 맞춘다.**
+
+```js
+export const CELL_W = 460, CELL_H = 260, PER_SHEET = 4
+export function trendSeries(sr, opts): Series
+export async function analyzeTrend(opts): Series[]      // 자료를 읽어 계열을 만든다
+export function noteworthy(s): number                   // 자동 선정 점수
+export function ticksOf(lo, hi): number[]
+export function layoutTrend(series, opts): {width, height, scale, ops}
+export async function renderTrendChart(series, opts): Uint8Array   // PNG
+export function narrateTrend(series, opts): string      // 사실만. 함의는 담당자 자리
+```
+
+```
+opts   = { region, basis, codes, from, to, limit }
+Series = { code, name, unit, years[], mine[], avg[], q1[], q3[], n[], nation[]|null }
+```
+
+- 선 규격 — 우리 지역 실선 2.6(점 r3.2) / 비교집단 평균 파선 2 `[5,3]` /
+  Q1~Q3 밴드 `#a8c5ff` alpha .45 / 전국 평균 점선 1.6 `[2,3]`
+- 비교 기준이 `'전국'`이면 `nation`은 `null` — 같은 선을 두 번 그리지 않는다
+- 비교집단이 4곳 미만이면 사분위를 내지 않는다(`q1`/`q3`가 `null`)
+- 결측 연도는 선을 끊는다. 값을 이어 붙여 없는 추세를 만들지 않는다
+- `limit > 0`이면 `noteworthy` 순으로 고르되 **돌려줄 때는 원래 차례로** 되돌린다.
+  선정 순서가 중요도 순서로 읽히면 없는 뜻이 생긴다
+- `ticksOf`는 구간을 5로 나눈다. 4로 나누면 간격을 위로 반올림하는 탓에
+  두세 줄밖에 안 서는 구간이 생긴다(예: -3.2~1.8 → -2, 0)
+
+## 5-3. `app/assets/cover.js` — 앞표지 구역 떼기
+
+```js
+export function hasFront(files): boolean
+export async function stripFront(bytes, bodyPath): Uint8Array
+export function wantsFront(sectionId): boolean     // 제1장이면 참
+```
+
+- 떼는 것 — `Contents/section0.xml`(빈 구역) `section1.xml`(표지·제출문·심의결과서)
+  `masterpage0.xml` `masterpage1.xml`
+- 남는 본문 구역은 `Contents/section0.xml`로 앞당기고 `content.hpf`(item·itemref)와
+  `META-INF/container.rdf`를 그에 맞춰 다시 쓴다
+- `settings.xml`의 `CaretPosition`은 첫 문단으로 되돌린다. 지워진 구역을 가리킨 채
+  두면 한글이 없는 문단을 찾아간다
+- **`header.xml`은 손대지 않는다.** 글꼴·자동 번호매기기가 그대로여야 한다
+- 붙일지 말지는 **부르는 쪽이 정해서 `makeDoc(text, images, front)`로 넘긴다.**
+  화면의 [앞표지 넣기]는 절 집필 탭 것이라, 다른 탭이 그 값을 보면 만진 값이 따라붙는다
+
+## 5-4. `app/assets/skillpack.js` — 개발도구용 스킬 꾸러미
+
+```js
+export const SKILL_NAME = 'rssp-hwpx'
+export const CARRIED    // [[저장소 주소, 꾸러미 안 경로], …]
+export const WRITTEN    // {꾸러미 안 경로: 글}
+export async function buildSkillPack(read): Uint8Array   // .zip
+export async function fetchRead(rel): Uint8Array
+```
+
+- 빌더 모듈은 **사본을 두지 않는다.** 내려받는 순간 `app/assets`에서 읽어 담으므로
+  도구가 고쳐지면 꾸러미도 같이 고쳐진다. 시험이 바이트 일치를 확인한다
+- 꾸러미 안 `build.mjs`는 외부 패키지를 쓰지 않는다. Node 22의
+  `CompressionStream('deflate-raw')`만 있으면 돈다
+- 실어 나를 파일을 못 읽거나 비어 있으면 **조용히 빠뜨리지 않고 오류**를 던진다
 
 ## 6. `app/assets/gemini.js` — 개인 키 기반 LLM 호출
 
@@ -217,6 +297,10 @@ export function clearUsage(): void
 - `tests/*.mjs` — Node 22에서 `node tests/xxx.mjs`로 바로 돈다. 시험 프레임워크 없음
 - 실패는 `process.exitCode = 1` + 사유 출력
 - E2E는 Playwright + `/opt/pw-browsers/chromium`. `playwright install` 금지
+- **자동 생성 원고는 눈으로 읽고 넘기지 않는다.** `narrate()`·`narrateTrend()` 결과를
+  `buildForm`에 실제로 넣어 hwpx가 나오는지 본다(`test_trend.mjs`). 줄머리 기호가
+  한글 글머리표와 겹치는 [이중 기호] 같은 것은 빌드에서야 터진다
+- 스킬 꾸러미는 **압축을 풀어 `build.mjs`를 진짜로 돌려** 확인한다(`test_skillpack.mjs`)
 
 ## 8. `app/assets/workspace.js` — 작업 폴더
 
