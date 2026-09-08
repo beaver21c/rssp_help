@@ -63,6 +63,10 @@ button,input,select,textarea{font-family:inherit;font-size:inherit;color:inherit
 .setup:not([data-state="fail"]) #k-force,
 .setup:not([data-state="fail"]) #k-auto{display:none}
 
+/* 실패 사유별 조치 안내 — 어디를 손봐야 하는지 한 줄 */
+.s-fix{margin:6px 0 0;font-size:12.3px;line-height:1.6;color:var(--ink-2)}
+.s-fix a{color:var(--navy);font-weight:600}
+
 .s-ok,.s-off{align-items:center;gap:10px;flex-wrap:wrap;font-size:12.5px}
 .s-dot{width:8px;height:8px;border-radius:50%;background:var(--green);flex:none}
 .s-off .s-dot{background:var(--ink-4)}
@@ -154,6 +158,13 @@ button.btn.sm{padding:5px 11px;font-size:12px;font-weight:500}
 .files .sz{margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--ink-3);flex:none}
 .files .rm{border:none;background:none;color:var(--ink-3);cursor:pointer;padding:0 3px;flex:none}
 .files .rm:hover{color:var(--red)}
+
+/* ── 작업 폴더 ── */
+.ck{display:flex;align-items:flex-start;gap:7px;font-size:12.5px;margin:10px 0 0;cursor:pointer;line-height:1.5}
+.ck input{margin-top:3px;flex:none}
+#ws-files{max-height:210px;overflow:auto}
+#ws-files li{gap:7px}
+#ws-files .btn{margin-left:auto;flex:none}
 
 /* ── 검사 결과 ── */
 .issues{list-style:none;margin:0;padding:0;font-size:12.5px}

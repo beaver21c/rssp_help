@@ -480,12 +480,13 @@ head('API 키 — 실호출 확인 절차와 모델 교체 대비');
 
   // 3) 목록 창구가 죽은 상황 — 내장 이름으로 밀어붙인다
   //    (직전에 기억한 gemini-9.9-flash를 먼저 두들겨 보고 404면 버리는 길까지 함께 지난다)
+  //    내장 목록의 맨 앞은 무료 몫이 가장 넉넉한 flash-lite여야 한다
   mock.list = () => errJ(500, '목록 창구가 죽었다');
-  mock.gen = (m) => (m === 'gemini-2.5-flash' ? genOK('OK') : errJ(404, `models/${m} is not found`));
+  mock.gen = (m) => (/flash-lite/.test(m) ? genOK('OK') : errJ(404, `models/${m} is not found`));
   await page.click('#k-recheck');
   await waitState('ok');
   const why3 = await page.textContent('#k-okwhy');
-  ok(why3.includes('gemini-2.5-flash'), '목록이 막혀도 내장 이름으로 연결된다', why3);
+  ok(/flash-lite/.test(why3), '목록이 막혀도 내장 이름으로 연결된다', why3);
   ok(why3.includes('모델 목록은 못 받았다'), '목록을 못 받았다는 사실을 감추지 않는다', why3);
 
   // 4) 키가 거부되는 상황
@@ -497,6 +498,73 @@ head('API 키 — 실호출 확인 절차와 모델 교체 대비');
   ok(msg.includes('확인 실패'), '거부된 키는 실패로 알린다', msg);
   ok(msg.includes('API key not valid'), '구글이 준 사유를 그대로 보여 준다', msg);
   ok(await page.isDisabled('#w-gen'), '확인이 깨지면 AI 기능이 다시 잠긴다');
+
+  // 4-3) 무료 등급 하루 몫이 떨어지면 스스로 멈춘다
+  const DAILY = 'You exceeded your current quota. quota_metric: '
+    + 'generativelanguage.googleapis.com/generate_content_free_tier_requests, '
+    + 'quota_id: GenerateRequestsPerDayPerProjectPerModel-FreeTier, limit: 1000';
+  mock.list = () => listOK(['gemini-3.5-flash-lite', 'gemini-3.5-flash']);
+  mock.gen = () => errJ(429, DAILY);
+  await page.click('#k-go');          // 실패 상태에서도 눌리는 쪽으로(다시 확인은 접힌 줄에 있다)
+  await waitState('fail');
+  ok(await page.isDisabled('#w-gen'), '몫이 떨어지면 AI 단추가 잠긴다');
+  const spentTxt = await page.textContent('#k-fix');
+  ok(/태평양 자정/.test(spentTxt), '되돌아오는 기준을 밝힌다', spentTxt);
+  ok(/양식 점검|양식만 넣기/.test(spentTxt), '그동안 쓸 수 있는 기능을 알려 준다', spentTxt);
+  ok(await page.locator('#w-skel').isEnabled(), '몫이 떨어져도 [양식만 넣기]는 살아 있다');
+  // 장부에 적혔으므로 다시 눌러도 그물을 타지 않는다
+  const beforeQ = urls.length;
+  await page.click('#k-go');
+  await page.waitForTimeout(300);
+  const after = urls.slice(beforeQ).filter((u) => /:generateContent$/.test(u));
+  ok(after.length === 0, '소진 뒤에는 생성 호출을 아예 내보내지 않는다', `${after.length}회`);
+
+  // 4-4) 내려간 모델 — 구글이 지목한 대체 이름으로 갈아탄다(실제로 받은 문구)
+  // 기억해 둔 우선 모델이 먼저 성공해 버리면 이 경로를 지나지 않는다. 장부와 함께 지운다.
+  await page.evaluate(() => {
+    try { localStorage.removeItem('gemini_usage'); localStorage.removeItem('gemini_model'); }
+    catch (e) { /* 저장소가 막혀 있어도 그만 */ }
+  });
+  const RETIRED = 'This model models/gemini-2.5-flash-lite is no longer available to new users. '
+    + 'Please update your code to use models/gemini-3.5-flash-lite for the latest features.';
+  mock.list = () => listOK(['gemini-2.5-flash-lite']);
+  mock.gen = (m) => (m === 'gemini-3.5-flash-lite' ? genOK('OK') : errJ(400, RETIRED));
+  await page.click('#k-go');
+  await waitState('ok');
+  const why4 = await page.textContent('#k-okwhy');
+  // 목록에는 내려간 이름 하나뿐인데 답한 것은 구글이 지목한 새 이름이다 = 갈아탄 증거
+  ok(why4.includes('gemini-3.5-flash-lite'), '구글이 지목한 대체 모델로 갈아탄다', why4);
+  ok(!why4.includes('gemini-2.5-flash-lite'), '내려간 이름을 응답 모델로 적지 않는다', why4);
+  const listedOnly = urls.filter((u) => /:generateContent$/.test(u)).slice(-2);
+  ok(listedOnly.some((u) => u.includes('gemini-2.5-flash-lite'))
+     && listedOnly.some((u) => u.includes('gemini-3.5-flash-lite')),
+    '내려간 이름을 한 번 시도한 뒤 대체 이름으로 넘어간다', listedOnly.join(' | '));
+  ok(/오늘 \d+회/.test(why4), '오늘 쓴 횟수를 보여 준다', why4);
+  ok(/되돌아옴/.test(why4), '몫이 되돌아오는 시각을 보여 준다', why4);
+
+  // 4-2) 크레딧이 바닥난 계정 — 실제로 겪은 사유다. 기다리라고 하면 안 되고,
+  //      모델을 더 두들겨도 안 되며, 어디를 손봐야 하는지 짚어 줘야 한다
+  const DEPLETED = 'Your prepayment credits are depleted. Please go to AI Studio at '
+    + 'https://ai.studio/projects to manage your project and billing.';
+  const before = urls.length;
+  mock.list = () => listOK(['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash']);
+  mock.gen = () => errJ(429, DEPLETED);
+  await page.click('#k-edit');        // 접힌 줄에서 입력 칸을 다시 편다
+  await waitState('need');
+  await page.fill('#k-in', FAKE);
+  await page.click('#k-go');
+  await waitState('fail');
+  const msg2 = await page.textContent('#k-test');
+  ok(msg2.includes('prepayment credits are depleted'), '크레딧 소진 사유를 그대로 보여 준다', msg2);
+  const gens = urls.slice(before).filter((u) => /:generateContent$/.test(u));
+  ok(gens.length === 1, '모델을 더 두들기지 않는다(계정 단위 문제)', `생성 호출 ${gens.length}회`);
+  const fix = await page.locator('#k-fix');
+  ok(await fix.isVisible(), '조치 안내가 나온다');
+  const fixTxt = await fix.textContent();
+  ok(/기다려도 풀리지 않는다/.test(fixTxt), '기다리라고 하지 않는다', fixTxt);
+  ok(await fix.locator('a[href="https://ai.studio/projects"]').count() === 1,
+    'AI Studio 결제 화면으로 가는 길을 준다', fixTxt);
+  ok(/키 없이 쓰기/.test(fixTxt), '그동안 쓸 수 있는 기능을 알려 준다', fixTxt);
 
   // 5) 막다른 길을 만들지 않는다 — 확인을 건너뛰고 쓰겠다는 길
   await page.click('#k-force');
@@ -515,6 +583,135 @@ head('API 키 — 실호출 확인 절차와 모델 교체 대비');
   const real = consoleErrs.filter((m) => !/Failed to load resource/.test(m));
   ok(real.length === 0, 'API 키 절차에서 튄 예외 없음', real.join(' | '));
   await ctx.unroute(/generativelanguage\.googleapis\.com/);
+}
+
+/* ───────── 작업 폴더와 맥락 카드 ─────────
+   폴더 고르기 창은 사람이 눌러야 뜨는 네이티브 창이라 자동으로 조작할 수 없다. 그래서
+   showDirectoryPicker만 메모리 폴더로 바꿔 끼우고, **우리 코드 경로는 그대로** 태운다
+   (저장·목록·되돌리기·카드 누적·지시문 주입이 실제로 도는지 본다). */
+head('작업 폴더 — 산출물 저장과 앞 절 맥락');
+{
+  consoleErrs.length = 0;
+  const page2 = await ctx.newPage();
+  page2.on('console', (m) => { if (m.type() === 'error') consoleErrs.push(m.text()); });
+  page2.on('pageerror', (e) => consoleErrs.push('pageerror: ' + e.message));
+
+  // 메모리 위에 사는 가짜 폴더. File System Access API가 주는 것과 같은 모양만 갖춘다.
+  await page2.addInitScript(() => {
+    const files = new Map();
+    const fileHandle = (name) => ({
+      kind: 'file',
+      name,
+      async getFile() {
+        const b = files.get(name) || new Uint8Array();
+        return {
+          size: b.length,
+          lastModified: Date.now(),
+          async arrayBuffer() { return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength); },
+        };
+      },
+      async createWritable() {
+        let buf = new Uint8Array();
+        return {
+          async write(d) {
+            const u = d instanceof Uint8Array ? d
+              : (typeof d === 'string' ? new TextEncoder().encode(d) : new Uint8Array(d));
+            const j = new Uint8Array(buf.length + u.length);
+            j.set(buf); j.set(u, buf.length);
+            buf = j;
+          },
+          async close() { files.set(name, buf); },
+        };
+      },
+    });
+    const dir = {
+      kind: 'directory',
+      name: '계획서작업',
+      async queryPermission() { return 'granted'; },
+      async requestPermission() { return 'granted'; },
+      async getFileHandle(name, opt) {
+        if (!files.has(name) && !(opt && opt.create)) throw new Error('NotFound');
+        if (!files.has(name)) files.set(name, new Uint8Array());
+        return fileHandle(name);
+      },
+      async *entries() { for (const n of files.keys()) yield [n, fileHandle(n)]; },
+    };
+    window.showDirectoryPicker = async () => dir;
+    window.__files = () => [...files.keys()];
+    window.__read = (n) => new TextDecoder().decode(files.get(n) || new Uint8Array());
+  });
+
+  await page2.goto(base, { waitUntil: 'networkidle' });
+  await page2.waitForSelector('#w-tree .tnode', { timeout: 30000 });
+
+  ok(await page2.locator('#ws-pick').isEnabled(), '폴더 지정 단추가 열려 있다');
+  await page2.click('#ws-pick');
+  await page2.waitForFunction(() => !document.querySelector('#ws-body').hidden, null, { timeout: 15000 });
+  ok((await page2.textContent('#ws-state')).includes('계획서작업'), '고른 폴더 이름이 보인다',
+    await page2.textContent('#ws-state'));
+
+  // 절 하나를 폴더에 낸다 — 내려받기가 아니라 폴더 쓰기로 가야 한다
+  const first = cat.nodes[0].id;
+  await page2.evaluate((id) => document.querySelector(`#w-tree .tnode[data-id="${id}"]`).click(), first);
+  await page2.click('#w-skel');
+  await page2.waitForTimeout(60);
+  const draft1 = await page2.inputValue('#w-draft');
+  await page2.click('#w-make');
+  await page2.waitForFunction(() => /완료|실패/.test(document.querySelector('#w-mstatus').textContent),
+    null, { timeout: 30000 });
+  const st1 = await page2.textContent('#w-mstatus');
+  ok(/작업 폴더에 저장/.test(st1), '산출물이 폴더로 간다(내려받기가 아니라)', st1);
+  ok(/맥락 카드 1개/.test(st1), '맥락 카드가 쌓인다', st1);
+
+  const names = await page2.evaluate(() => window.__files());
+  ok(names.some((n) => n.endsWith('.hwpx')), '폴더에 hwpx가 쓰였다', names.join(', '));
+  ok(names.includes('_맥락.json'), '맥락 장부가 폴더에 쓰였다', names.join(', '));
+
+  // 장부 내용 — 전문이 아니라 요약이어야 한다
+  const ledger = JSON.parse(await page2.evaluate(() => window.__read('_맥락.json')));
+  ok(Array.isArray(ledger) && ledger.length === 1, '장부에 카드 하나', JSON.stringify(ledger).slice(0, 120));
+  ok(ledger[0].id === first, '카드가 그 절의 것', ledger[0].id);
+  const cardSize = JSON.stringify(ledger[0]).length;
+  // 카드는 원고 길이와 무관하게 상한 안에 묶인다(그래야 65개를 쌓아도 지시문이 안 부푼다)
+  ok(cardSize < 2000, '카드 크기가 묶여 있다', `카드 ${cardSize}자 / 원고 ${draft1.length}자`);
+  ok(Array.isArray(ledger[0].names) && Array.isArray(ledger[0].tables),
+    '카드가 원문이 아니라 갈래별 요약이다', Object.keys(ledger[0]).join(','));
+
+  // 목록에 뜨고, [참고 원문으로]가 실제로 되돌려 넣는다(1단계)
+  ok(await page2.locator('#ws-files li').count() >= 1, '폴더 산출물이 목록에 뜬다');
+  await page2.locator('#ws-files li button').first().click();
+  await page2.waitForFunction(() => document.querySelector('#w-src').value.length > 0,
+    null, { timeout: 30000 });
+  const src = await page2.inputValue('#w-src');
+  ok(src.includes('되돌린 원고'), '되돌린 원고가 [참고 원문]에 들어간다', src.slice(0, 60));
+
+  // 다음 절 지시문에 앞 절 카드가 자동으로 들어간다(2단계)
+  const second = cat.nodes.find((n) => n.id !== first && n.id.startsWith('01')).id;
+  await page2.evaluate((id) => document.querySelector(`#w-tree .tnode[data-id="${id}"]`).click(), second);
+  await page2.click('#w-showprompt');
+  await page2.waitForSelector('#pModal.on', { timeout: 10000 });
+  const prompt = await page2.inputValue('#p-text');
+  ok(prompt.includes('[앞서 작성한 절의 결정 사항]'), '지시문에 앞 절 맥락이 붙는다');
+  ok(prompt.includes(first), '앞 절 id가 맥락에 있다', prompt.slice(prompt.indexOf('[앞서'), prompt.indexOf('[앞서') + 160));
+  ok(/옮겨 적지는 말고/.test(prompt), '베끼지 말라는 단서가 붙는다');
+
+  // 체크를 끄면 안 붙는다
+  await page2.click('#p-close');
+  await page2.uncheck('#w-ctx');
+  await page2.click('#w-showprompt');
+  await page2.waitForSelector('#pModal.on', { timeout: 10000 });
+  const off = await page2.inputValue('#p-text');
+  ok(!off.includes('[앞서 작성한 절의 결정 사항]'), '체크를 끄면 맥락을 넣지 않는다');
+  await page2.click('#p-close');
+
+  // 폴더를 놓으면 종전 방식으로 되돌아간다
+  await page2.check('#w-ctx');
+  await page2.click('#ws-drop');
+  await page2.waitForFunction(() => document.querySelector('#ws-body').hidden, null, { timeout: 10000 });
+  ok(true, '폴더를 놓으면 폴더 화면이 접힌다');
+
+  ok(consoleErrs.length === 0, '작업 폴더 절차 콘솔 오류 없음', consoleErrs.join(' | '));
+  await page2.close();
 }
 
 await browser.close();

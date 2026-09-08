@@ -11,13 +11,37 @@
  */
 "use strict";
 
+import {
+  bump, markExhausted, isExhausted, usable, setVerified as noteVerified,
+} from './quota.js';
+
 export const BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
 /** 429(할당량 초과)를 만났을 때 다음 모델로 넘어가기 전 쉬는 시간. */
 export const RETRY_MS = 2000;
 
-/** 모델 목록이 비었을 때 기대 볼 이름들. 무료 티어에서 대개 살아 있다. */
-export const FALLBACK_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+/**
+ * 기본은 **flash-lite 계열 중 가장 높은 판**이다. 이름을 박지 않는다.
+ *
+ * 2026-09-08에 실제로 겪은 일 — `gemini-2.5-flash-lite`를 고정했더니 구글이
+ * "no longer available to new users. Please update your code to use
+ * models/gemini-3.5-flash-lite"라고 돌려줬다. 특정 이름을 기본으로 박아 두면
+ * 구글이 판을 올릴 때마다 도구가 멈춘다. 그래서 계열만 정하고 판은 목록에서 고른다.
+ * (정렬 규칙이 flash → 높은 판 → lite 차례이므로 목록 맨 앞이 곧 그 값이다.)
+ */
+export const DEFAULT_FAMILY = /flash-lite/i;
+
+/**
+ * 모델 목록 창구까지 막혔을 때만 쓰는 이름들. 무료 몫이 넉넉한 차례로 적되,
+ * 여기 적힌 이름도 언제든 죽는다는 전제로 여러 개를 둔다.
+ *
+ * 2026-09 기준으로 확인한 판도 — 2.0 계열은 2026-06-01 종료, 2.5 계열은 2026-10-16 종료
+ * 예정이라 이미 신규 사용자에게 막혔다. 그래서 3.x Flash-Lite를 앞에 두고 2.5는 꼬리에만
+ * 남긴다. **이 목록은 최후 수단일 뿐이고 정상 경로는 실행 시점 목록 조회다.**
+ */
+export const FALLBACK_MODELS = [
+  'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.5-flash', 'gemini-2.5-flash-lite',
+];
 
 /** 이름만 보고 걸러 내는 모델. 실험·미리보기·음성·그림·임베딩 계열은 원고 생성에 안 맞는다. */
 const SKIP_RE = /exp|experimental|preview|tts|image|embed|live|audio|thinking/i;
@@ -27,7 +51,14 @@ const SKIP_RE = /exp|experimental|preview|tts|image|embed|live|audio|thinking/i;
  * `/`·`?`·`&`·공백이 섞이면 경로나 쿼리스트링이 뒤틀린다(키가 주소로 새는 길이 열린다).
  * 실제 모델 이름은 전부 영숫자·점·밑줄·붙임표뿐이니 그 밖은 이름부터 물리친다.
  */
-const SAFE_MODEL = /^[A-Za-z0-9._-]+$/;
+const SAFE_MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/**
+ * 이름 검사. 글자 종류만 보면 `..`가 통과해 상위 경로로 빠져나갈 수 있다
+ * (`models/../evil?key=LEAK`처럼 구글이 준 오류 문구 안에 섞여 들어올 수 있는 값이다).
+ * 그래서 첫 글자를 영숫자로 못박고 점 두 개를 따로 물리친다.
+ */
+const SAFE_MODEL = { test: (n) => SAFE_MODEL_RE.test(String(n)) && !String(n).includes('..') };
 
 const KEY_NAME = 'gemini_key';
 
@@ -138,22 +169,24 @@ const authHeader = (key) => ({ 'x-goog-api-key': key });
 // 모델 목록·우선순위
 // ──────────────────────────────────────────────────────────────
 /**
- * 정렬 기준값 [flash 여부, 버전, lite 역순].
- * 무료 티어에서는 flash 계열이 한도가 넉넉하니 앞세우고,
- * 같은 계열이면 버전이 높은 것을, 동버전이면 lite가 아닌 쪽을 앞에 둔다.
+ * 정렬 기준값 **[flash 여부, lite 여부, 판 번호]** — 이 차례가 중요하다.
+ *
+ * 판 번호를 lite보다 먼저 보면 새로 나온 상위 모델(예: gemini-3.8-flash)이 기본이 되어
+ * 무료 등급에서 곧바로 한도에 걸린다. 이 도구의 기본은 **무료로 오래 돌아가는 것**이므로
+ * ①flash 계열 ②그중 lite ③그중 가장 높은 판 차례로 고른다.
+ * 품질을 앞세우고 싶으면 화면의 [우선 모델]에서 직접 고르면 된다.
  */
 export function rankModel(name) {
   const n = String(name || '');
   const v = n.match(/(\d+)\.(\d+)/) || [0, 0, 0];
   const ver = (+v[1]) * 100 + (+v[2]);
-  const lite = n.includes('lite') ? 1 : 0;
-  return [n.includes('flash') ? 1 : 0, ver, -lite];
+  return [n.includes('flash') ? 1 : 0, n.includes('lite') ? 1 : 0, ver];
 }
 
 const byRank = (a, b) => {
   const x = rankModel(a);
   const y = rankModel(b);
-  return y[0] - x[0] || y[1] - x[1] || y[2] - x[2];
+  return y[0] - x[0] || y[1] - x[1] || y[2] - x[2] || a.localeCompare(b);
 };
 
 /** 이름 목록을 계약대로 걸러 내고 정렬한다. 순수 함수라 시험에서 바로 부를 수 있다. */
@@ -166,14 +199,20 @@ export function orderModels(names) {
   return [...flash, ...rest];
 }
 
+/** 살아 있는 목록에서 기본으로 삼을 이름(가장 높은 판의 flash-lite). 없으면 빈 문자열. */
+export function defaultModel(models) {
+  return (Array.isArray(models) ? models : []).find((n) => DEFAULT_FAMILY.test(n)) || '';
+}
+
 /* 마지막으로 성공한 모델. 구글이 목록을 바꿔도 어제 되던 것부터 다시 해 본다.
    반대로 그 모델이 사라지면(404) 곧바로 버려서 묵은 이름에 매이지 않는다. */
 const PREF_NAME = 'gemini_model';
 
 export function getPreferred() {
   const s = store('local');
+  // 저장소가 멀쩡하면 그것만 믿는다. 메모리로 되살리면 다른 탭에서 지운 값이 살아 돌아온다.
   if (!s) return memory.pref || '';
-  try { return s.getItem(PREF_NAME) || memory.pref || ''; }
+  try { return s.getItem(PREF_NAME) || ''; }
   catch (e) { return memory.pref || ''; }
 }
 
@@ -250,6 +289,44 @@ async function httpError(r) {
 
 /** 키 자체가 잘못된 경우인가. 이러면 다른 모델로 넘어가 봐야 똑같이 막힌다. */
 const isKeyFault = (msg) => /api key|permission|expired/i.test(String(msg || ''));
+
+/**
+ * 계정의 선불 크레딧이 바닥난 경우인가. 이것도 계정 단위라 모델을 바꿔 봐야 똑같이 막힌다.
+ * 모델별 일일 한도("You exceeded your current quota, please check your plan and billing
+ * details")와는 다르다 — 그쪽은 다른 모델로 넘어가면 통할 때가 있으므로 여기 걸리면 안 된다.
+ * 그래서 'billing'이라는 낱말이 아니라 크레딧 소진 문구만 집는다.
+ */
+const isBillingFault = (msg) => /prepay|credits?\s+(are|is)\s+depleted|out of credits/i
+  .test(String(msg || ''));
+
+/**
+ * 429가 **하루 몫**을 다 쓴 것인가(분당 몫이 아니라).
+ * 하루 몫이면 오늘은 그 모델이 끝난 것이라 장부에 적고 다시 두들기지 않는다.
+ * 분당 몫이면 잠깐 쉬었다 가면 되므로 여기 걸리면 안 된다.
+ */
+const isDailyQuota = (msg) => /per\s*day|PerDay|requests_per_day|free_tier_requests/i
+  .test(String(msg || ''));
+
+/** 구글이 429 본문에 적어 준 한도 값(있을 때만). 관측값이라 우리 참고값보다 앞선다. */
+function limitInMessage(msg) {
+  const m = String(msg || '').match(/limit:\s*(\d+)/i);
+  return m ? Number(m[1]) : 0;
+}
+
+/** 그 이름이 내려간 모델인가(신규 사용자 차단·지원 종료). */
+const isRetired = (msg) => /no longer available|not available to new users|deprecated|discontinued/i
+  .test(String(msg || ''));
+
+/**
+ * 구글이 오류 본문에서 대신 쓰라고 지목한 모델 이름.
+ * 실제로 받은 문구 — "Please update your code to use models/gemini-3.5-flash-lite".
+ * 이름을 그대로 주소에 넣을 값이라 SAFE_MODEL을 통과한 것만 받는다.
+ */
+export function replacementIn(msg) {
+  const m = String(msg || '').match(/use\s+models\/([A-Za-z0-9._-]+)/i);
+  const one = m ? m[1] : '';
+  return one && SAFE_MODEL.test(one) && !SKIP_RE.test(one) ? one : '';
+}
 
 /**
  * 200이어도 본문이 JSON이 아닐 수 있다(프록시가 끼워 넣은 안내 쪽, 잘린 응답).
@@ -353,6 +430,17 @@ export async function generate(opts, deps) {
     if (pref) models = [pref, ...models.filter((m) => m !== pref)];
     if (listErr) o._listError = listErr.message;
   }
+  // 오늘 하루 몫을 이미 다 쓴 모델은 빼고 간다. 무료 등급에서 헛호출을 아끼고,
+  // 남은 것이 없으면 여기서 조용히 끝낸다(작업 도중 몫이 떨어져도 스스로 멈추게).
+  const left = usable(models);
+  if (!left.length) {
+    const e = new Error('오늘 쓸 수 있는 무료 몫을 다 썼다. 태평양 자정에 되돌아온다.');
+    e.quota = true;
+    e.fatal = true;
+    e.spent = models.slice();
+    throw e;
+  }
+  models = left;
   const headers = { 'Content-Type': 'application/json', ...authHeader(key) };
   let last = null;
 
@@ -372,6 +460,7 @@ export async function generate(opts, deps) {
         break;
       }
       if (r.ok) {
+        bump(model);            // 200이면 하루 몫을 한 칸 쓴 것이다
         let j;
         try {
           j = await readJson(r, model);
@@ -389,16 +478,42 @@ export async function generate(opts, deps) {
       }
       last = await httpError(r);
       if (isKeyFault(last.message)) throw Object.assign(last, { fatal: true });
+      // 크레딧이 바닥난 것이면 다음 모델을 두들겨 봐야 똑같이 막힌다. 2초씩 쉬며
+      // 목록 전체를 도는 헛수고 대신 곧바로 사유를 들고 나간다.
+      if (isBillingFault(last.message)) throw Object.assign(last, { fatal: true, billing: true });
       // 없어진 이름을 계속 물고 있지 않는다
       if (last.status === 404 && model === getPreferred()) setPreferred('');
-      // 429는 잠깐 쉬었다 다음 모델로. 마지막 모델이면 쉬어 봐야 헛기다림이다.
-      if (last.status === 429) { if (!isLast) await sleep(RETRY_MS); break; }
+      // 내려간 모델이면 기억에서 지우고, 구글이 지목한 대체 이름을 그 자리에서 이어 붙인다
+      if (isRetired(last.message)) {
+        if (model === getPreferred()) setPreferred('');
+        const next = replacementIn(last.message);
+        last.retired = model;
+        last.replacement = next;
+        if (next && !models.includes(next) && !isExhausted(next)) models.push(next);
+        break;
+      }
+      if (last.status === 429) {
+        if (isDailyQuota(last.message)) {
+          // 오늘 이 모델은 끝났다. 장부에 적어 두고 쉬지 않고 다음 모델로 간다.
+          markExhausted(model, limitInMessage(last.message));
+          last.quota = true;
+          break;
+        }
+        // 분당 몫이면 잠깐 쉬었다 다음 모델로. 마지막이면 쉬어 봐야 헛기다림이다.
+        if (!isLast) await sleep(RETRY_MS);
+        break;
+      }
       if (last.status === 400 && useSchema) continue;
       break;                    // 404 등 — 다음 모델
     }
   }
   if (last && o._listError) {
     last.message += ` (모델 목록도 받지 못했다: ${o._listError})`;
+  }
+  // 모든 모델이 하루 몫으로 막힌 것이면 그 사실을 분명히 해서 화면이 멈출 수 있게 한다
+  if (last && last.quota && !usable(models).length) {
+    last.fatal = true;
+    last.message = `오늘 쓸 수 있는 무료 몫을 다 썼다 (${last.message})`;
   }
   throw last || new Error('쓸 수 있는 모델이 없다.');
 }
@@ -434,7 +549,8 @@ export const PING = '연결 확인이다. 다른 말 없이 정확히 OK 라고�
 export async function verifyKey(opts, deps) {
   const o = opts || {};
   const out = { ok: false, model: '', models: [], listed: false, listError: '',
-    error: '', fatal: false, sample: '', scope: keyScope() };
+    error: '', fatal: false, billing: false, quota: false, retired: '', replacement: '',
+    switchedFrom: '', sample: '', scope: keyScope() };
   let key;
   try {
     key = needKey(o.key);
@@ -446,8 +562,12 @@ export async function verifyKey(opts, deps) {
     out.models = await listModels(key, deps);
     out.listed = true;
   } catch (e) {
-    // 키가 거부된 것이면 생성도 볼 것 없다. 그 밖의 사유는 내장 목록으로 계속 간다.
+    // 키가 거부됐거나 크레딧이 바닥난 것이면 생성도 볼 것 없다(둘 다 계정 단위).
+    // 그 밖의 사유는 내장 목록으로 계속 간다.
     if (isKeyFault(e && e.message)) { out.error = e.message; out.fatal = true; return out; }
+    if (isBillingFault(e && e.message)) {
+      out.error = e.message; out.fatal = true; out.billing = true; return out;
+    }
     out.models = [...FALLBACK_MODELS];
     out.listError = e.message;
   }
@@ -456,10 +576,18 @@ export async function verifyKey(opts, deps) {
       { key, model: o.model || '', prompt: PING, temperature: 0 }, deps);
     out.ok = true;
     out.model = r.model;
+    // 고정해 둔 이름이 내려가 다른 모델이 답했으면 화면이 그 사실을 알 수 있게 한다
+    if (o.model && r.model !== o.model.replace(/^models\//, '')) out.switchedFrom = o.model;
     out.sample = String(r.text || '').trim().slice(0, 40);
+    // 오늘 이 키는 확인을 마쳤다. 다음에 페이지를 열 때 같은 몫을 또 쓰지 않는다.
+    noteVerified(key);
   } catch (e) {
     out.error = e.message;
     out.fatal = !!e.fatal;
+    out.billing = !!e.billing;
+    out.quota = !!e.quota;
+    out.retired = e.retired || '';
+    out.replacement = e.replacement || '';
   }
   return out;
 }

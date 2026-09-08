@@ -9,6 +9,9 @@ import { extractAttachment, SUPPORTED } from './attach.js';
 import { loadIndex, groupCodes, analyze, narrate, KEY_CODES } from './indicator.js';
 import { renderComparisonChart } from './chart.js';
 import * as gem from './gemini.js';
+import * as quota from './quota.js';
+import * as ws from './workspace.js';
+import { CARD_FILE, cardFrom, mergeCard, pickCards, contextBlock } from './context.js';
 import { readBodyText } from './docread.js';
 import { injectRawBlocks, token as layoutToken, usedKeys } from './rawblock.js';
 
@@ -38,12 +41,30 @@ function download(bytes, name) {
 /* 파일명으로 쓸 수 없는 글자를 걷어낸다 */
 const safeName = (s) => String(s).replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, '_').slice(0, 80);
 
+/* 산출물 넘기기 — 작업 폴더가 잡혀 있으면 거기 쓰고, 아니면 종전대로 내려받는다.
+   돌려주는 값은 화면에 덧붙일 한 줄. */
+async function deliver(bytes, name) {
+  if (ws.current()) {
+    try {
+      const put = await ws.saveFile(name, bytes);
+      await refreshFolder();
+      return ` · 작업 폴더에 저장 (${ws.folderName()}/${put})`;
+    } catch (e) {
+      download(bytes, name);            // 폴더에 못 쓰면 잃지 말고 내려받는다
+      return ` · 폴더에 쓰지 못해 내려받았다 (${e.message})`;
+    }
+  }
+  download(bytes, name);
+  return '';
+}
+
 /* ───────── 상태 ───────── */
 const S = {
   catalog: null, form: null, template: null,
   wSection: null, wFiles: [], wDraft: '',
   regions: null, indexCat: null, rows: null, rPng: null,
   cDoc: null, cName: '',
+  cards: [], wsPending: null,
 };
 
 /* ───────── 부팅 ───────── */
@@ -69,16 +90,47 @@ async function boot() {
   } catch (e) {
     say('#r-status', '지표 데이터를 불러오지 못했다 — ' + e.message, 'err');
   }
-  // 저장해 둔 키가 있으면 들어오자마자 다시 확인한다. 어제 되던 모델이 오늘 없어졌으면
-  // 여기서 드러나고, 살아 있는 목록으로 우선 모델이 갱신된다.
-  if (gem.getKey()) {
-    $('#k-in').value = gem.getKey();
-    const local = gem.keyScope() === 'local';
-    $$('input[name=k-store]').forEach((r) => { r.checked = (r.value === 'local') === local; });
-    verify();
-  } else {
+  // 지난번 작업 폴더를 되살린다. 권한이 남아 있으면 바로 잡히고, 다시 물어야 하면
+  // 사용자가 한 번 눌러 줘야 한다(브라우저가 클릭 없이는 안 묻는다).
+  try {
+    const back = await ws.restore();
+    if (back.need) {
+      S.wsPending = back.handle;
+      $('#ws-grant').hidden = false;
+      say('#ws-state', `지난번 폴더 ${back.name} — [폴더 권한 다시 주기]를 누르면 이어서 쓴다`, '');
+    }
+    await refreshFolder();
+  } catch (e) {
+    say('#ws-state', '폴더 상태를 확인하지 못했다 — ' + e.message, 'err');
+  }
+
+  // 저장해 둔 키가 있으면 다시 확인한다. 어제 되던 모델이 오늘 없어졌으면 여기서 드러난다.
+  // 다만 **오늘 이미 확인한 키면 실호출을 건너뛴다** — 무료 등급에서는 페이지를 열 때마다
+  // 하루 몫을 한 칸씩 쓰는 것이 아깝다. [다시 확인]을 누르면 그때는 진짜로 부른다.
+  const key = gem.getKey();
+  if (!key) {
     setState('need');
     syncKey();
+    return;
+  }
+  $('#k-in').value = key;
+  const local = gem.keyScope() === 'local';
+  $$('input[name=k-store]').forEach((r) => { r.checked = (r.value === 'local') === local; });
+  if (quota.isVerified(key)) {
+    K.verified = true;
+    K.models = [];
+    fillModels([], null);
+    setState('ok');
+    $('#k-oklbl').textContent = gem.keyScope() === 'local'
+      ? 'API 키 확인됨 · 이 브라우저에 저장' : 'API 키 확인됨 · 이 탭에서만';
+    $('#k-okwhy').textContent = [
+      '오늘 이미 확인한 키라 실호출을 건너뛰었다(무료 몫 아낌)',
+      gem.getPreferred() ? `우선 모델 ${gem.getPreferred()}` : '',
+      usageText(),
+    ].filter(Boolean).join(' · ');
+    syncKey();
+  } else {
+    verify();
   }
 }
 
@@ -304,6 +356,11 @@ function assemblePrompt() {
       shows.map((h, i) => `작성례 ${i + 1} (${h.form.rows}행 ${h.form.cols}열)\n`
         + gridText(h.form.grid, h.form.cols, 12)).join('\n\n').slice(0, 12000));
   }
+  // 앞서 낸 절의 결정 사항 — 관련 있는 카드만 예산 안에서 골라 넣는다
+  if ($('#w-ctx').checked) {
+    const block = contextBlock(pickCards(S.wSection, S.cards, S.catalog));
+    if (block) parts.push(block);
+  }
   const req = $('#w-prompt').value.trim();
   const src = $('#w-src').value.trim();
   if (req) parts.push('[담당자 요청]\n' + req);
@@ -340,15 +397,33 @@ $('#w-gen').onclick = async () => {
     });
     $('#w-draft').value = stripFence(text);
     $('#w-make').disabled = false;
-    say('#w-status', `초안 작성 완료 · 모델 ${model}`, 'ok');
+    say('#w-status', `초안 작성 완료 · 모델 ${model} · ${usageText()}`, 'ok');
+    if (K.state === 'ok') $('#k-okwhy').textContent = `응답 모델 ${model} · ${usageText()}`;
     runLint();
   } catch (e) {
-    say('#w-status', '호출 실패 — ' + e.message + (e.fatal ? ' (API 키를 확인할 것)' : ''), 'err');
+    say('#w-status', '호출 실패 — ' + e.message + failTail(e), 'err');
   }
   btn.disabled = false;
 };
 
 const stripFence = (t) => String(t).replace(/^```[a-z]*\n?/i, '').replace(/```\s*$/, '').trim();
+
+/* 호출 실패에 덧붙이는 한 줄. 계정 단위 문제는 다시 눌러도 안 풀리니 그렇게 적는다.
+   오늘 몫이 끝난 것이면 화면 전체를 그 상태로 바꿔 작업이 스스로 멈추게 한다. */
+function failTail(e) {
+  if (e && e.quota) {
+    markSpent('오늘 쓸 수 있는 무료 몫을 다 썼다.');
+    return ` — 오늘 몫이 끝났다. ${quota.resetText()}에 되돌아온다`;
+  }
+  if (e && e.billing) {
+    return ' — 구글 계정의 선불 크레딧이 바닥났다. AI Studio(ai.studio/projects)에서 결제를 처리해야 한다';
+  }
+  if (e && e.retired) {
+    return ` — ${e.retired}는 내려간 모델이다`
+      + (e.replacement ? `. 구글이 ${e.replacement}를 대신 쓰라고 알려 왔다` : '');
+  }
+  return e && e.fatal ? ' — API 키가 거부됐다. 맨 위 띠에서 키를 다시 확인할 것' : '';
+}
 
 /* 표 칸 하나를 파이프 표에 넣을 수 있는 한 줄로 눕힌다.
    안내서 머리행에는 줄바꿈이 흔하다("성과지표 명\n(단위)"). 그대로 쓰면 파이프 표
@@ -490,6 +565,115 @@ async function makeDoc(text, images) {
   return { ...res, bytes: out.bytes, layouts: out.placed };
 }
 
+/* ───────── 작업 폴더와 맥락 장부 ─────────
+   1단계 — 산출물을 사용자가 정한 폴더에 바로 쓰고, 그 폴더의 앞선 절을 골라 [참고 원문]에 넣는다.
+   2단계 — 절을 낼 때마다 결정 사항만 카드로 뽑아 폴더의 _맥락.json에 쌓고, 다음 절 지시문에
+           관련 카드만 자동으로 넣는다. 카드 추출에는 AI를 부르지 않아 하루 몫을 축내지 않는다. */
+
+/** 폴더 화면을 지금 상태로 다시 그린다. */
+async function refreshFolder() {
+  const box = $('#ws-state');
+  const list = $('#ws-files');
+  const has = !!ws.current();
+  $('#ws-pick').textContent = has ? '폴더 바꾸기' : '작업 폴더 지정';
+  $('#ws-drop').hidden = !has;
+  $('#ws-body').hidden = !has;
+
+  if (!ws.supported()) {
+    box.className = 'status';
+    box.textContent = '이 브라우저는 폴더 지정을 지원하지 않는다(크롬·엣지에서 됨). 산출물은 기본 내려받기 폴더로 간다.';
+    $('#ws-pick').disabled = true;
+    return;
+  }
+  if (!has) {
+    box.className = 'status';
+    box.textContent = '폴더를 지정하면 산출물이 그 폴더에 바로 쌓이고, 앞서 쓴 절을 맥락으로 쓸 수 있다.';
+    return;
+  }
+
+  list.innerHTML = '';
+  let files = [];
+  try {
+    files = await ws.listFiles('.hwpx');
+  } catch (e) {
+    say('#ws-state', '폴더를 읽지 못했다 — ' + e.message, 'err');
+    return;
+  }
+  S.cards = await ws.readJson(CARD_FILE, []);
+  if (!Array.isArray(S.cards)) S.cards = [];
+
+  say('#ws-state', `${ws.folderName()} · 산출물 ${files.length}개 · 맥락 카드 ${S.cards.length}개`, 'ok');
+  if (!files.length) {
+    list.innerHTML = '<li class="empty">아직 이 폴더에 산출물이 없다.</li>';
+    return;
+  }
+  for (const f of files) {
+    const li = el('li');
+    li.innerHTML = `<span class="nm">${esc(f.name)}</span>`
+      + `<span class="sz">${kb(f.size || 0)}</span>`;
+    const b = el('button', 'btn ghost sm', '참고 원문으로');
+    b.onclick = () => useAsSource(f.name);
+    li.appendChild(b);
+    list.appendChild(li);
+  }
+}
+
+/** 폴더 안 산출물 하나를 마커 원고로 되돌려 [참고 원문]에 넣는다(1단계 수동 경로). */
+async function useAsSource(name) {
+  say('#ws-state', `${name} 읽는 중…`, 'busy');
+  try {
+    const bytes = await ws.readFile(name);
+    const rb = await readBodyText(bytes, S.form);
+    const box = $('#w-src');
+    const head = `[${name}에서 되돌린 원고]`;
+    box.value = (box.value.trim() ? box.value.trim() + '\n\n' : '') + head + '\n' + rb.text;
+    $$('.tab').find((t) => t.dataset.tab === 'write').click();
+    box.focus();
+    say('#ws-state', `${name} → [참고 원문]에 넣었다 (${rb.total}문단)`, 'ok');
+  } catch (e) {
+    say('#ws-state', '읽지 못했다 — ' + e.message, 'err');
+  }
+}
+
+/** 절을 낸 뒤 그 절의 결정 사항을 카드로 남긴다(2단계). 폴더가 없으면 이 판에서만 기억한다. */
+async function noteCard(node, text) {
+  if (!node) return '';
+  const card = cardFrom(node, text, new Date());
+  S.cards = mergeCard(S.cards, card);
+  if (!ws.current()) return ' · 맥락 카드는 이 탭에서만 유지된다(폴더를 지정하면 남는다)';
+  try {
+    await ws.writeJson(CARD_FILE, S.cards);
+    return ` · 맥락 카드 ${S.cards.length}개`;
+  } catch (e) {
+    return ' · 맥락 카드를 폴더에 쓰지 못했다: ' + e.message;
+  }
+}
+
+$('#ws-pick').onclick = async () => {
+  try {
+    const got = await ws.pick();
+    if (!got) return;                        // 사용자가 취소
+    await refreshFolder();
+  } catch (e) {
+    say('#ws-state', '폴더를 잡지 못했다 — ' + e.message, 'err');
+  }
+};
+$('#ws-drop').onclick = async () => {
+  await ws.forget();
+  S.cards = [];
+  await refreshFolder();
+};
+$('#ws-grant').onclick = async () => {
+  try {
+    await ws.grant(S.wsPending);
+    S.wsPending = null;
+    $('#ws-grant').hidden = true;
+    await refreshFolder();
+  } catch (e) {
+    say('#ws-state', '권한을 받지 못했다 — ' + e.message, 'err');
+  }
+};
+
 /* ───────── 절 hwpx 산출 ───────── */
 $('#w-make').onclick = async () => {
   const text = $('#w-draft').value;
@@ -498,11 +682,12 @@ $('#w-make').onclick = async () => {
   try {
     const res = await makeDoc(text, new Map());
     const n = S.wSection;
-    download(res.bytes, `${safeName((n ? (n.id + '_' + n.title) : '절'))}.hwpx`);
+    const where = await deliver(res.bytes, `${safeName((n ? (n.id + '_' + n.title) : '절'))}.hwpx`);
+    const card = await noteCard(n, text);
     const bad = (res.issues || []).length;
     say('#w-mstatus', `산출 완료 (${kb(res.bytes.length)})`
       + (res.layouts.length ? ` · 도식 ${res.layouts.length}개 포함` : '')
-      + (bad ? ` · 경고 ${bad}건` : ''), bad ? '' : 'ok');
+      + (bad ? ` · 경고 ${bad}건` : '') + where + card, bad ? '' : 'ok');
   } catch (e) {
     say('#w-mstatus', '산출 실패 — ' + e.message, 'err');
   }
@@ -649,8 +834,10 @@ $('#r-make').onclick = async () => {
     if (!text.includes(`![](${IMG})`)) text = insertImage(text, IMG);
     const res = await makeDoc(text, new Map([[IMG, S.rPng]]));
     const sec = findSection(S.catalog, $('#r-sec').value);
-    download(res.bytes, `${safeName((sec ? sec.id + '_' : '') + '지역여건_' + regionLabel(S.rOpts))}.hwpx`);
-    say('#r-mstatus', `산출 완료 (${kb(res.bytes.length)}) · 그래프 포함`, 'ok');
+    const where = await deliver(res.bytes,
+      `${safeName((sec ? sec.id + '_' : '') + '지역여건_' + regionLabel(S.rOpts))}.hwpx`);
+    const card = await noteCard(sec ? resolve(sec) : null, text);
+    say('#r-mstatus', `산출 완료 (${kb(res.bytes.length)}) · 그래프 포함` + where + card, 'ok');
   } catch (e) {
     say('#r-mstatus', '산출 실패 — ' + e.message, 'err');
   }
@@ -669,7 +856,7 @@ $('#r-polish').onclick = async () => {
     });
     $('#r-draft').value = stripFence(text);
     say('#r-pstatus', '완료', 'ok');
-  } catch (e) { say('#r-pstatus', '실패 — ' + e.message, 'err'); }
+  } catch (e) { say('#r-pstatus', '실패 — ' + e.message + failTail(e), 'err'); }
 };
 
 /* ───────── 양식 점검 ───────── */
@@ -736,15 +923,16 @@ $('#c-fix').onclick = async () => {
     });
     $('#c-draft').value = stripFence(text);
     say('#c-mstatus', '교정 완료 — 내용을 확인한 뒤 다시 만든다', 'ok');
-  } catch (e) { say('#c-mstatus', '실패 — ' + e.message, 'err'); }
+  } catch (e) { say('#c-mstatus', '실패 — ' + e.message + failTail(e), 'err'); }
 };
 
 $('#c-make').onclick = async () => {
   say('#c-mstatus', '양식 적용 중…', 'busy');
   try {
     const res = await makeDoc($('#c-draft').value, new Map());
-    download(res.bytes, safeName(S.cName.replace(/\.hwpx$/i, '') + '_양식적용') + '.hwpx');
-    say('#c-mstatus', `산출 완료 (${kb(res.bytes.length)})`, 'ok');
+    const where = await deliver(res.bytes,
+      safeName(S.cName.replace(/\.hwpx$/i, '') + '_양식적용') + '.hwpx');
+    say('#c-mstatus', `산출 완료 (${kb(res.bytes.length)})` + where, 'ok');
   } catch (e) { say('#c-mstatus', '산출 실패 — ' + e.message, 'err'); }
 };
 
@@ -754,7 +942,7 @@ $('#c-make').onclick = async () => {
    확인은 모델 목록 조회로 끝내지 않는다. 목록이 통해도 생성만 막힌 키가 있고,
    무엇보다 구글이 모델 이름을 갈아 치우면 목록만으로는 그 사실이 드러나지 않는다.
    그래서 실제 generateContent를 한 번 때려 보고, 답한 모델 이름을 화면에 박아 둔다. */
-const K = { models: [], verified: false, state: '' };
+const K = { models: [], verified: false, state: '', spent: false };
 
 const storeMode = () => ($$('input[name=k-store]').find((r) => r.checked) || {}).value === 'local';
 
@@ -763,14 +951,40 @@ function setState(s) {
   $('#setup').dataset.state = s;
   const busy = s === 'busy';
   ['#k-go', '#k-in', '#k-recheck', '#k-model', '#k-skip'].forEach((q) => { $(q).disabled = busy; });
+  if (s !== 'fail') $('#k-fix').hidden = true;
 }
 
-/** AI를 쓰는 단추는 확인이 끝난 뒤에만 열린다. */
+/** AI를 쓰는 단추는 확인이 끝나고 오늘 몫이 남아 있을 때만 열린다. */
 function syncKey() {
-  const on = K.verified && !!gem.getKey();
+  const on = K.verified && !!gem.getKey() && !K.spent;
   $('#w-gen').disabled = !on;
   $('#r-polish').disabled = !on;
   $('#c-fix').disabled = !on || !S.cDoc;
+}
+
+/* 오늘 쓴 몫과 되돌아오는 시각. 무료 등급은 이 두 가지가 곧 작업 가능 여부다. */
+function usageText() {
+  const u = quota.usage();
+  const left = quota.untilReset();
+  const when = quota.resetText();
+  const bits = [`오늘 ${u.total}회`];
+  const lim = quota.limitOf(gem.getPreferred() || '');
+  if (lim.rpd) bits.push(lim.source === 'observed' ? `한도 ${lim.rpd}회(관측값)` : `한도 ${lim.rpd}회(참고값)`);
+  bits.push(`몫 되돌아옴 ${when} (${left.hours}시간 ${left.minutes}분 뒤)`);
+  return bits.join(' · ');
+}
+
+/* 오늘 몫이 끝났을 때 — 작업을 붙잡지 말고 그 자리에서 멈추고 사실을 적는다. */
+function markSpent(msg) {
+  K.spent = true;
+  setState('fail');
+  say('#k-test', msg || '오늘 쓸 수 있는 무료 몫을 다 썼다.', 'err');
+  const box = $('#k-fix');
+  box.innerHTML = `무료 등급의 하루 몫은 <b>태평양 자정</b>에 되돌아온다 — `
+    + `<b>${esc(quota.resetText())}</b>(약 ${quota.untilReset().hours}시간 뒤)까지 AI 기능은 잠긴다. `
+    + `그동안 <b>지역여건 분석</b>·<b>양식 점검</b>·[양식만 넣기]는 그대로 쓸 수 있다.`;
+  box.hidden = false;
+  syncKey();
 }
 
 /* 우선 모델 선택 상자를 살아 있는 목록으로 다시 채운다.
@@ -801,24 +1015,63 @@ async function verify() {
   fillModels(K.models, pick);
 
   if (res.ok) {
+    K.spent = false;
     setState('ok');
+    // 고정해 둔 이름이 내려갔으면 실제로 답한 모델로 갈아 끼운다(막다른 길로 두지 않는다)
+    if (res.switchedFrom) {
+      gem.setPreferred(res.model);
+      fillModels(K.models, res.model);
+    }
     $('#k-oklbl').textContent = gem.keyScope() === 'local'
       ? 'API 키 확인됨 · 이 브라우저에 저장' : 'API 키 확인됨 · 이 탭에서만';
     const bits = [`응답 모델 ${res.model}`];
+    if (res.switchedFrom) bits.push(`${res.switchedFrom}은 내려가 자동으로 바꿨다`);
     bits.push(res.listed ? `쓸 수 있는 모델 ${K.models.length}개` : '모델 목록은 못 받았다(내장 이름으로 연결)');
+    bits.push(usageText());
     if (gem.storageBlocked()) bits.push('저장소가 막혀 메모리에만 둔다 — 새로 고치면 지워진다');
     $('#k-okwhy').textContent = bits.join(' · ');
     say('#k-test', '', '');
+  } else if (res.quota) {
+    markSpent('확인 실패 — ' + res.error);
   } else {
     setState('fail');
     // 특정 모델을 고정해 둔 채 막힌 것이면 되돌릴 길을 같은 줄에 내민다(선택 상자는 ok 줄에 있다)
     $('#k-auto').hidden = !pick;
-    const tail = res.fatal ? ' · 키 자체가 거부됐다. 키를 다시 발급하거나 붙여넣기를 확인할 것'
-      : pick ? ` · ${pick} 모델을 고정해 둔 상태다. [자동 모델로 되돌려 다시 확인]을 눌러 볼 것`
-        : ' · 잠시 뒤 [키 확인하고 시작]을 다시 눌러 볼 것';
-    say('#k-test', '확인 실패 — ' + (res.error || '사유 불명') + tail, 'err');
+    say('#k-test', '확인 실패 — ' + (res.error || '사유 불명'), 'err');
+    showFix(res, pick);
   }
   syncKey();
+}
+
+/* 사유별 조치 안내. 「잠시 뒤 다시」로 뭉뚱그리면 기다려도 안 풀리는 문제까지
+   기다리게 만든다. 계정 단위 문제(크레딧·키)와 일시적 문제를 갈라 적는다. */
+function showFix(res, pick) {
+  const box = $('#k-fix');
+  let html = '';
+  if (res.billing) {
+    html = '구글 계정의 선불 크레딧이 바닥났다. <b>모델을 바꾸거나 기다려도 풀리지 않는다</b> — '
+      + '<a href="https://ai.studio/projects" target="_blank" rel="noopener noreferrer">AI Studio</a>에서 '
+      + '결제·크레딧을 처리한 뒤 다시 확인한다. 그동안 <b>지역여건 분석</b>·<b>양식 점검</b>은 '
+      + '[키 없이 쓰기]로 그대로 쓸 수 있다.';
+  } else if (res.retired) {
+    // 구글이 대체 이름을 알려 준 경우 — 그대로 눌러 바꿀 수 있게 한다
+    html = `<b>${esc(res.retired)}</b>는 내려간 모델이다`
+      + (res.replacement
+        ? ` — 구글이 <b>${esc(res.replacement)}</b>를 대신 쓰라고 알려 왔다. `
+          + '[자동 모델로 되돌려 다시 확인]을 누르면 살아 있는 목록에서 다시 고른다.'
+        : '. [자동 모델로 되돌려 다시 확인]을 눌러 살아 있는 목록에서 다시 고른다.');
+    $('#k-auto').hidden = false;
+  } else if (res.fatal) {
+    html = '키 자체가 거부됐다. 붙여넣기가 온전한지 보고, 아니면 '
+      + '<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer">AI Studio</a>에서 '
+      + '키를 다시 발급한다.';
+  } else if (pick) {
+    html = `${esc(pick)} 모델을 고정해 둔 상태다. [자동 모델로 되돌려 다시 확인]을 눌러 본다.`;
+  } else {
+    html = '연결이나 한도 쪽 문제일 수 있다. 잠시 뒤 [키 확인하고 시작]을 다시 누른다.';
+  }
+  box.innerHTML = html;
+  box.hidden = false;
 }
 
 function openKeyForm() {
@@ -854,8 +1107,9 @@ $('#k-auto').onclick = () => {
 $('#k-del').onclick = () => {
   gem.setKey('', false);
   gem.setPreferred('');
+  quota.clearVerified();
   $('#k-in').value = '';
-  K.verified = false; K.models = [];
+  K.verified = false; K.models = []; K.spent = false;
   setState('need');
   say('#k-test', '키를 지웠다', '');
   syncKey();
