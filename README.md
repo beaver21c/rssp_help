@@ -54,6 +54,29 @@ rssp-hwpx/
 Node 22 이상이면 설치할 패키지 없이 그대로 돈다(`CompressionStream('deflate-raw')`만 쓴다).
 꾸러미는 내려받는 순간 `app/assets`에서 모듈을 읽어 담으므로 도구와 어긋날 자리가 없다.
 
+## 꾸러미 꼴 — 한글이 「손상된 파일」이라고 하지 않으려면
+
+`.hwpx`는 zip이다. 그런데 **안에 든 XML이 아무리 멀쩡해도 zip 항목의 꼴이 한글이 쓰는
+것과 다르면 한글은 문서를 열지 않는다.** 우리 쪽 판독기로 잘 읽히는 것은 증거가 되지
+못한다 — 읽는 규칙이 우리 것이기 때문이다.
+
+그래서 `zip.js`는 `unzip()`이 항목마다 **틀**(압축 방식·플래그·만든 운영체제·파일 속성·
+시각)을 함께 돌려주고, 다시 쌀 때 그 틀을 그대로 물려준다. 꾸러미를 다시 쓰는 세 자리
+(`hwpx-form.js` 본문 교체 · `rawblock.js` 도식 삽입 · `cover.js` 표지 떼기)가 모두 이 틀을
+넘긴다. 표지를 떼며 본문 구역 이름이 바뀔 때는 틀도 새 이름으로 함께 옮긴다.
+
+| 자리 | 규칙 |
+|---|---|
+| `mimetype` | 맨 앞·무압축·플래그 0. 어떤 틀이 와도 이것만은 강제한다 |
+| 압축 방식 | 항목마다 원본 그대로(`version.xml`·`BinData/*`·`Preview/PrvImage.png`는 무압축) |
+| 이름 플래그 | 이름이 아스키면 0, 아스키 밖 글자가 섞이면 UTF-8 비트(0x0800) |
+| 만든 판·속성·시각 | 원본 값을 물려준다. 새 항목은 같은 갈래 형제(`BinData/`)를 따른다 |
+| `Preview/PrvText.txt` | **UTF-8**. `META-INF/container.xml`에 rootfile(text/plain)로 걸려 있다 |
+
+`tests/test_package.mjs`가 **한글 13.0이 직접 쓴 안내서 원본**을 기준으로 산출물의 항목
+틀을 바이트로 대조한다. 일부러 견주지 않는 둘 — 플래그 비트 1~2(deflate 인코더 설정이라
+우리 스트림과 무관)와 `vmade`의 하위 바이트(만든 zip 판이라 읽는 데 영향 없음).
+
 ## 서식이 어떻게 지켜지는가
 
 산출물은 **안내서 원본을 템플릿으로 두고 본문 구역(`Contents/section2.xml`)의 문단만
@@ -265,11 +288,12 @@ node tests/test_attach.mjs           # 첨부파일 추출                      
 node tests/test_indicator.mjs        # 지표 산출·비교집단·차트                (59건)
 node tests/test_trend.mjs            # 연도별 추이·그림 장 나누기·표지 떼기      (80건)
 node tests/test_skillpack.mjs        # 스킬 꾸러미 짜기·풀어서 실제 빌드         (51건)
+node tests/test_package.mjs          # hwpx 꾸러미 꼴이 한글 원본과 같은가        (36건)
 node tests/test_catalog_js.mjs       # 절 카탈로그 소비 모듈                  (79건)
 node tests/test_quota.mjs            # 무료 몫 장부·태평양 리셋·서머타임         (55건)
 node tests/test_context.mjs          # 맥락 카드 뽑기·고르기·예산               (59건)
 node tests/test_gemini.mjs           # 키·모델 폴백·실호출 확인·몫 소진(가짜 fetch)(192건)
-node tests/test_e2e.mjs              # 브라우저에서 65개 마디 전부 산출        (782건)
+node tests/test_e2e.mjs              # 브라우저에서 65개 마디 전부 산출        (922건)
 ```
 
 `test_e2e.mjs`는 Chromium을 띄워 실제 화면을 조작한다. 마디마다 양식을 넣고 hwpx를
@@ -283,7 +307,7 @@ node tests/test_e2e.mjs              # 브라우저에서 65개 마디 전부 �
 가짜 폴더를 끼워 작업 폴더 저장·목록·되돌리기·카드 누적·지시문 주입까지 확인한다. `--max=3`으로 줄여 돌릴 수 있고
 `--only=02-나-1`로 한 마디만 볼 수도 있다.
 
-최근 실행 결과 — 65/65 마디 산출, 단언 782건 전부 통과.
+최근 실행 결과 — 65/65 마디 산출, 단언 922건 전부 통과.
 
 ## 산출 방식에 관한 주의
 

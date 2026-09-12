@@ -1597,7 +1597,8 @@ export async function buildDocument(templateBytes, userProfile, items) {
   files.set('Contents/header.xml', encoder.encode(patchHeader(headerXml, profile, ids, keys, textKeys)));
   files.set('Contents/section0.xml', encoder.encode(buildSection(sectionXml, profile, ids, items, grids)));
 
-  return { bytes: await zip(files), warnings };
+  /* 원본 꾸러미의 항목 틀을 물려준다 — 빠뜨리면 한글이 문서를 열지 못한다 */
+  return { bytes: await zip(files, { stored: ['mimetype'], frames: files.frames }), warnings };
 }
 
 /** 마커 텍스트 한 번에 처리: 파싱 → 검사 → 생성 */

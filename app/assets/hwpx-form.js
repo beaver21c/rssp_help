@@ -1085,18 +1085,12 @@ function toRoman(chapter) {
   return roman;
 }
 
-//: 미리보기 글은 한글이 다시 저장할 때 갱신한다. 자리만 채워 둔다
-const PREVIEW_TEXT = 'build_form.py로 만든 문서 — 한글에서 저장하면 미리보기가 갱신된다';
-
-function utf16le(text) {
-  const out = new Uint8Array(text.length * 2);
-  for (let i = 0; i < text.length; i += 1) {
-    const code = text.charCodeAt(i);
-    out[i * 2] = code & 0xff;
-    out[i * 2 + 1] = code >>> 8;
-  }
-  return out;
-}
+//: 미리보기 글은 한글이 다시 저장할 때 갱신한다. 자리만 채워 둔다.
+//  **UTF-8로 쓴다.** 파이썬 build_form.py는 UTF-16LE로 썼고 이 이식본도 그대로
+//  따랐으나, 안내서 원본(한글 13.0이 쓴 파일)의 Preview/PrvText.txt는 UTF-8이다.
+//  이 파일은 META-INF/container.xml에 rootfile(text/plain)로 걸려 있어 읽는 쪽이
+//  UTF-8로 해독한다. 원본과 같은 인코딩으로 맞춘다.
+const PREVIEW_TEXT = '지역사회보장계획 작성지원 플랫폼으로 만든 문서 — 한글에서 저장하면 미리보기가 갱신된다';
 
 /**
  * 양식 + 마커 텍스트 → hwpx 바이트.
@@ -1173,7 +1167,7 @@ async function buildFormOnce(templateBytes, formLike, text, opts) {
   const files = new Map(entries);
   files.set(form.section, encoder.encode(newSection));
   if (body.images.length) files.set(HPF_PATH, encoder.encode(hpf));
-  files.set('Preview/PrvText.txt', utf16le(PREVIEW_TEXT));
+  files.set('Preview/PrvText.txt', encoder.encode(PREVIEW_TEXT));
   for (const img of body.images) files.set(`BinData/${img.id}${img.ext}`, img.data);
 
   // 한글은 mimetype이 무압축으로 맨 앞에 있어야 hwpx로 읽는다
@@ -1182,7 +1176,9 @@ async function buildFormOnce(templateBytes, formLike, text, opts) {
   for (const [name, data] of files) {
     if (name !== 'mimetype') ordered.set(name, data);
   }
-  const bytes = await zip(ordered, ['mimetype']);
+  /* 원본 꾸러미의 항목 틀(압축 방식·플래그·속성·시각)을 그대로 물려준다.
+     이것을 빠뜨리면 한글이 제 파일로 알아보지 못한다 */
+  const bytes = await zip(ordered, { stored: ['mimetype'], frames: entries.frames });
 
   const broken = await checkOutput(bytes);
   if (broken.length) throw new Error(`3층 산출물 검사에서 걸렸다 — ${broken.join(' / ')}`);

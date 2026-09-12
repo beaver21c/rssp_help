@@ -79,5 +79,7 @@ export async function injectRawBlocks(bytes, sectionPath, blocks) {
   const ordered = new Map();
   if (entries.has('mimetype')) ordered.set('mimetype', entries.get('mimetype'));
   for (const [name, data] of entries) if (name !== 'mimetype') ordered.set(name, data);
-  return { bytes: await zip(ordered, ['mimetype']), placed, missing };
+  /* 항목 틀을 그대로 물려준다 — 도식을 끼워 넣는다고 꾸러미 꼴이 달라지면 안 된다 */
+  const out = await zip(ordered, { stored: ['mimetype'], frames: entries.frames });
+  return { bytes: out, placed, missing };
 }
