@@ -193,6 +193,54 @@ const hashOf = async (keys) => {
   for (const k of keys) if (tplParts.has(k)) out[k] = await sha(tplParts.get(k));
   return out;
 };
+/* 브라우저가 실제로 내려준 파일의 **꾸러미 꼴**을 본다.
+   XML이 멀쩡해도 zip 항목의 압축 방식·플래그·속성이 한글이 쓰는 것과 다르면
+   한글은 「손상된 파일」이라며 열지 않는다. 자세한 규칙은 tests/test_package.mjs. */
+function zipShapes(bytes) {
+  const b = new Uint8Array(bytes);
+  const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  let eocd = -1;
+  for (let i = b.length - 22; i >= 0; i -= 1) {
+    if (v.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error('EOCD 없음');
+  const count = v.getUint16(eocd + 10, true);
+  let o = v.getUint32(eocd + 16, true);
+  const out = new Map();
+  const order = [];
+  for (let i = 0; i < count; i += 1) {
+    const nameLen = v.getUint16(o + 28, true);
+    const name = new TextDecoder().decode(b.subarray(o + 46, o + 46 + nameLen));
+    out.set(name, `method=${v.getUint16(o + 10, true)} `
+      + `flag=0x${(v.getUint16(o + 8, true) & ~0x0006).toString(16).padStart(4, '0')} `
+      + `host=${v.getUint16(o + 4, true) >> 8} date=${v.getUint16(o + 14, true)} `
+      + `eattr=0x${v.getUint32(o + 38, true).toString(16)} extra=${v.getUint16(o + 30, true)}`);
+    order.push(name);
+    o += 46 + nameLen + v.getUint16(o + 30, true) + v.getUint16(o + 32, true);
+  }
+  return { shapes: out, order };
+}
+const TPL_SHAPE = zipShapes(tplBytes);
+
+/** 내려받은 파일의 항목 꼴이 템플릿과 같은가. 이름이 바뀐 본문 구역도 따져 준다. */
+function checkShape(bytes, label) {
+  let got;
+  try { got = zipShapes(bytes); } catch (e) { return ok(false, `[${label}] zip 꼴 판독`, e.message); }
+  ok(got.order[0] === 'mimetype' && /method=0 flag=0x0000/.test(got.shapes.get('mimetype')),
+    `[${label}] mimetype 이 맨 앞·무압축·플래그 0`, got.shapes.get('mimetype'));
+  const bad = [];
+  for (const [name, sh] of got.shapes) {
+    /* 표지를 떼면 본문 구역이 section0 으로 앞당겨진다 — 원래 자리의 꼴과 견준다 */
+    const key = (name === 'Contents/section0.xml' && !got.shapes.has(RAW_BODY))
+      ? RAW_BODY : name;
+    const want = TPL_SHAPE.shapes.get(key)
+      || TPL_SHAPE.shapes.get([...TPL_SHAPE.shapes.keys()]
+        .find((k) => k.split('/')[0] === name.split('/')[0]) || '');
+    if (want && sh !== want) bad.push(`${name}\n        산출 ${sh}\n        기준 ${want}`);
+  }
+  return ok(bad.length === 0, `[${label}] zip 항목 꼴이 템플릿과 같다`, bad.join('\n      '));
+}
+
 const ALWAYS_HASH = await hashOf(['Contents/header.xml', 'Contents/masterpage2.xml']);
 const FRONT_HASH = await hashOf(['Contents/section0.xml', 'Contents/section1.xml',
   'Contents/masterpage0.xml', 'settings.xml']);
@@ -280,6 +328,7 @@ for (const node of targets) {
   ok(txt(parts.get('mimetype')) === 'application/hwp+zip', `[${label}] mimetype`);
   const front = wantsCover(node.id);
   await checkKept(parts, front, label);
+  checkShape(buf, label);
 
   const secXml = txt(parts.get(bodyPath(front)) || new Uint8Array());
   ok(secXml.length > 0, `[${label}] 본문 구역이 있다`, `찾은 자리 ${bodyPath(front)}`);
@@ -393,6 +442,7 @@ for (const c of CASES) {
   const parts = await unzipFile(new Uint8Array(fs.readFileSync(f)));
   /* 지역여건은 장에 속하지 않는 산출물이라 표지를 붙이지 않는다 */
   await checkKept(parts, false, `지역여건 ${code}`);
+  checkShape(new Uint8Array(fs.readFileSync(f)), `지역여건 ${code}`);
   const sec = txt(parts.get(bodyPath(false)) || new Uint8Array());
   const bin = [...parts.keys()].filter((k) => k.startsWith('BinData/') && /\.(png|jpe?g)$/i.test(k));
   const pics = (sec.match(/<hp:pic\b/g) || []).length;
@@ -442,6 +492,7 @@ if (made.length) {
       const parts = await unzipFile(new Uint8Array(fs.readFileSync(f)));
       ok(txt(parts.get('mimetype')) === 'application/hwp+zip', `재조판(${tag}) 산출물이 유효한 hwpx`);
       await checkKept(parts, front, `재조판 ${tag}`);
+      checkShape(new Uint8Array(fs.readFileSync(f)), `재조판 ${tag}`);
       ok(txt(parts.get(bodyPath(front)) || new Uint8Array()).includes('<hp:t>'),
         `재조판(${tag}) 본문 구역에 글이 있다`, `찾은 자리 ${bodyPath(front)}`);
     } catch (e) {

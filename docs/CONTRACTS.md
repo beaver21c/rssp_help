@@ -15,6 +15,37 @@
 - 바이너리는 항상 `Uint8Array`로 주고받는다. `Blob`·`ArrayBuffer`를 반환하지 않는다.
 - 실패는 `throw new Error('한국어 사유')`. 조용한 `null` 반환 금지.
 
+## 0-2. `app/assets/zip.js` — 꾸러미 꼴 보존
+
+```js
+export async function unzip(buffer): Map<name, Uint8Array>   // .frames 가 함께 달려 온다
+export async function zip(files, opts): Uint8Array
+//   opts = ['mimetype'] (기존 방식) | { stored, frames }
+```
+
+`unzip()`이 돌려주는 Map에는 열거되지 않는 `frames`가 달린다 —
+`Map<name, {method, vmade, time, date, eattr}>`.
+
+**hwpx를 다시 쓰는 모든 자리는 이 틀을 넘겨야 한다.** XML이 멀쩡해도 zip 항목의 꼴이
+한글이 쓰는 것과 다르면 한글은 「손상된 파일」이라며 열지 않는다. 우리 `unzip()`으로
+읽히는 것은 증거가 아니다(읽는 규칙이 우리 것이다).
+
+- 넘기는 자리 — `hwpx-form.js`(본문 교체) · `rawblock.js`(도식 삽입) · `cover.js`(표지 떼기) ·
+  `hwpx-studio.js`. 스킬 꾸러미의 `build.mjs`는 같은 모듈을 실어 나르므로 자동으로 따른다
+- `cover.js`는 본문 구역 이름을 바꾸므로 **틀도 새 이름으로 옮긴다**
+- `mimetype`은 어떤 틀이 와도 맨 앞·무압축으로 강제한다
+- 이름 플래그(0x0800)는 **이름에 아스키 밖 글자가 있을 때만** 켠다. 늘 켜 두면 한글이
+  제 손으로 쓴 파일과 꼴이 달라진다
+- 플래그 비트 1~2는 물려받지 않는다 — deflate **인코더 설정** 자리인데 우리는 우리
+  스트림을 만들므로 원본 값을 옮기는 것이 거짓이 된다
+- 틀 없이 부르면(스킬 꾸러미 zip 등) 예전대로 동작한다
+
+`Preview/PrvText.txt`는 **UTF-8**로 쓴다. 파이썬 `build_form.py`는 UTF-16LE로 썼고 이
+이식본도 그대로 따랐으나, 안내서 원본은 UTF-8이고 이 파일은 `META-INF/container.xml`에
+rootfile(`text/plain`)로 걸려 있다.
+
+검사는 `tests/test_package.mjs` — 기준은 **한글 13.0이 직접 쓴 안내서 원본**이다.
+
 ## 1. `app/assets/hwpx-form.js` — 양식 보존 빌더 (JS 이식)
 
 `hwpx_set`의 `hwpx_studio/export_form.py`가 만들어 내는 `build_form.py`(파이썬)를
@@ -301,6 +332,9 @@ export function clearUsage(): void
   `buildForm`에 실제로 넣어 hwpx가 나오는지 본다(`test_trend.mjs`). 줄머리 기호가
   한글 글머리표와 겹치는 [이중 기호] 같은 것은 빌드에서야 터진다
 - 스킬 꾸러미는 **압축을 풀어 `build.mjs`를 진짜로 돌려** 확인한다(`test_skillpack.mjs`)
+- **hwpx는 열리는지까지 봐야 한다.** XML 검사·우리 `unzip()` 통과는 증거가 못 된다.
+  `test_package.mjs`가 한글이 쓴 원본을 기준으로 꾸러미 꼴을 바이트로 대조하고,
+  `test_e2e.mjs`가 브라우저가 실제로 내려준 파일에 같은 검사를 건다
 
 ## 8. `app/assets/workspace.js` — 작업 폴더
 

@@ -94,8 +94,14 @@ export async function stripFront(bytes, bodyPath) {
   const kept = new Map();
   const NEW = 'Contents/section0.xml';
   const NEW_ID = 'section0';
+  /* 항목 틀도 함께 옮긴다. 본문 구역은 이름이 바뀌므로 틀을 새 이름에 다시 단다 —
+     빠뜨리면 그 항목만 꼴이 달라져 한글이 문서를 열지 못한다 */
+  const src = files.frames instanceof Map ? files.frames : new Map();
+  const frames = new Map();
   for (const [name, data] of files) {
     if (DROP.includes(name)) continue;
+    const to = name === body ? NEW : name;
+    if (src.has(name)) frames.set(to, src.get(name));
     if (name === 'Contents/content.hpf') {
       kept.set(name, enc(fixHpf(dec(data), body, NEW, NEW_ID)));
     } else if (name === 'META-INF/container.rdf') {
@@ -108,7 +114,7 @@ export async function stripFront(bytes, bodyPath) {
       kept.set(name, data);
     }
   }
-  return zip(kept);
+  return zip(kept, { stored: ['mimetype'], frames });
 }
 
 /**
