@@ -146,17 +146,45 @@ function needDir() {
 /** 파일 이름으로 못 쓰는 글자를 걷어낸다. */
 export const safeName = (s) => String(s).replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, '_').slice(0, 90);
 
-/** 바이트를 폴더에 쓴다. 같은 이름이 있으면 덮어쓴다. */
+
+/**
+ * 폴더에 파일을 쓴다.
+ *
+ * 쓰기가 어긋나면 **닫지 않고 버린다.** `close()`는 그때까지 쓴 만큼을 파일로
+ * 확정하므로, 실패한 자리에서 닫으면 **반쪽짜리 hwpx가 폴더에 남는다** — 담당자
+ * 눈에는 멀쩡한 파일로 보이고 한글에서만 「손상된 파일」이 된다. `abort()`는 쓴
+ * 것을 통째로 버려 그런 파일을 만들지 않는다.
+ *
+ * 닫은 뒤에는 크기를 한 번 더 본다. 디스크가 모자라거나 동기화 폴더가 가로채면
+ * 오류 없이 덜 기록되는 일이 있는데, 그때도 반쪽 파일이 남기 때문이다.
+ */
 export async function saveFile(name, bytes) {
   const d = needDir();
-  const fh = await d.getFileHandle(safeName(name), { create: true });
+  const file = safeName(name);
+  const fh = await d.getFileHandle(file, { create: true });
+  // keepExistingData 기본값이 false라 먼저 비운다. 참이면 옛 파일 꼬리가 남아 깨진다
   const w = await fh.createWritable();
   try {
     await w.write(bytes);
-  } finally {
     await w.close();
+  } catch (e) {
+    try { await w.abort(); } catch (_) { /* 이미 닫혔으면 그만 */ }
+    await dropFile(d, file);
+    throw new Error(`${file} 을(를) 폴더에 쓰지 못했다 — ${e.message}`);
   }
-  return safeName(name);
+  const got = (await fh.getFile()).size;
+  if (got !== bytes.length) {
+    await dropFile(d, file);
+    throw new Error(`${file} 이(가) 덜 기록됐다 — ${got}/${bytes.length} 바이트. `
+      + '디스크 여유와 동기화 폴더(원드라이브·구글드라이브) 설정을 확인할 것');
+  }
+  return file;
+}
+
+/** 반쪽 파일을 치운다. 못 치우면 그냥 넘어간다 — 원래 오류를 덮지 않는다.
+    (`drop()`은 IndexedDB 의 폴더 핸들을 지우는 다른 함수다. 이름을 갈라 둔다) */
+async function dropFile(dir, file) {
+  try { await dir.removeEntry(file); } catch (e) { /* 없거나 못 지우면 그만 */ }
 }
 
 /** 폴더 안 파일 목록. 숨김 장부(_로 시작)는 빼고 이름순으로 준다. */
@@ -201,3 +229,8 @@ export async function writeJson(name, obj) {
   const text = JSON.stringify(obj, null, 2);
   return saveFile(name, new TextEncoder().encode(text));
 }
+
+/* 시험용 접점 — 브라우저에는 File System Access API 가 있지만 Node 에는 없다.
+   폴더 핸들을 직접 끼워 파일 쓰기 규칙(실패 시 버리기·덜 기록 잡기)을 시험한다.
+   화면 코드는 이것을 부르지 않는다. */
+export function _setDir(handle) { dir = handle || null; }

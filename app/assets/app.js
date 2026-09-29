@@ -19,6 +19,7 @@ import { readBodyText } from './docread.js';
 import { injectRawBlocks, token as layoutToken, usedKeys } from './rawblock.js';
 import { stripFront, wantsFront } from './cover.js';
 import { buildSkillPack, fetchRead, SKILL_NAME } from './skillpack.js';
+import { BUILD, checkStale } from './version.js';
 
 /* ───────── 공용 ───────── */
 const $ = (s) => document.querySelector(s);
@@ -73,8 +74,25 @@ const S = {
   cards: [], wsPending: null,
 };
 
+/* ───────── 판 번호 ─────────
+   빌드 과정이 없는 정적 페이지라 주소가 늘 같다. 브라우저가 `assets/*.js`를 캐시에
+   쥐고 있으면 새 판을 올려도 열어 둔 탭은 옛 코드를 그대로 돌리고, 그 상태로 만든
+   hwpx는 고치기 전과 똑같이 한글에서 열리지 않는다. 화면이 그 사실을 알린다. */
+async function showBuild() {
+  const tag = $('#build');
+  if (tag) tag.textContent = BUILD === 'dev' ? '개발판' : `판 ${BUILD}`;
+  let r;
+  try { r = await checkStale(); } catch (e) { return; }
+  if (!r.stale) return;
+  $('#stale-v').textContent = `이 화면 ${r.here} · 올라간 판 ${r.there}`;
+  $('#stale').hidden = false;
+  if (tag) tag.textContent = `판 ${r.here} (옛 판)`;
+}
+$('#stale-go').onclick = () => { location.reload(); };
+
 /* ───────── 부팅 ───────── */
 async function boot() {
+  showBuild();                         // 기다리지 않는다. 늦게 떠도 되는 알림이다
   try {
     const [cat, form, tpl] = await Promise.all([
       loadCatalog(),

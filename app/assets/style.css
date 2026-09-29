@@ -161,6 +161,17 @@ button.btn.sm{padding:5px 11px;font-size:12px;font-weight:500}
 
 /* ── 작업 폴더 ── */
 .ck{display:flex;align-items:flex-start;gap:7px;font-size:12.5px;margin:10px 0 0;cursor:pointer;line-height:1.5}
+/* ── 판 번호와 옛 판 경고 ── */
+.build{font-family:var(--mono);font-size:10.5px;color:var(--ink-4);margin-left:8px;letter-spacing:.02em}
+.stalebar{background:#8c2f22;color:#fff}
+.stale-in{max-width:1400px;margin:0 auto;padding:9px 20px;display:flex;align-items:center;
+  gap:10px;flex-wrap:wrap;font-size:12.5px;line-height:1.5}
+.stale-in b{font-weight:700}
+.stale-in .sp{margin-left:auto}
+.stale-in .vv{font-family:var(--mono);font-size:11px;opacity:.85}
+.stale-in .btn{background:#fff;border-color:#fff;color:#8c2f22;flex:none}
+.stale-in .btn:hover{background:#ffe9e5;border-color:#ffe9e5}
+
 .ck input{margin-top:3px;flex:none}
 /* 글은 한 덩이로 묶어 둔다. 맨 글자와 <span class=hint>가 따로 칸을 차지하면
    좁은 칸에서 두 줄이 나란히 갈라져 읽을 수 없게 된다 */
