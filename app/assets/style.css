@@ -195,6 +195,7 @@ button.btn.sm{padding:5px 11px;font-size:12px;font-weight:500}
 .lv.err{background:var(--red-soft);color:var(--red)}
 .lv.warn{background:var(--amber-soft);color:var(--amber)}
 .lv.ok{background:var(--green-soft);color:var(--green)}
+.lv.info{background:var(--sheet-2);color:var(--ink-3)}
 .empty{padding:22px 16px;text-align:center;color:var(--ink-3);font-size:12.5px}
 
 /* ── 상태줄 ── */

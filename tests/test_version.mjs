@@ -185,5 +185,83 @@ head('폴더 쓰기 (saveFile)');
   ws._setDir(null);
 }
 
+/* ───────── 4. 내려받기 ─────────
+   Blob 주소를 일찍 거두면 파일이 끊겨 저장된다. 브라우저 설정이 「저장 위치 확인」이면
+   사용자가 폴더를 고를 때까지 내려받기가 시작되지 않는데, 그 전에 거두면 브라우저가
+   읽을 바이트를 잃는다. 코드에 그 실수가 다시 들어오지 못하게 막는다. */
+head('내려받기 (app.js)');
+{
+  const app = fs.readFileSync(path.join(APP, 'assets/app.js'), 'utf8');
+
+  const revokes = [...app.matchAll(/revokeObjectURL/g)].length;
+  ok(revokes > 0, `주소를 거두기는 한다 (${revokes}자리)`);
+
+  /* 짧은 시간 뒤 거두는 자리가 없어야 한다 */
+  const soon = [...app.matchAll(/revokeObjectURL[\s\S]{0,80}?\}?,\s*(\d+)\)/g)]
+    .map((m) => Number(m[1])).filter((n) => n < 60_000);
+  ok(soon.length === 0, '1분 안에 거두는 자리가 없다', soon.join(', '));
+  ok(/OBJECT_URL_TTL/.test(app), '거두는 시간을 한자리에 모아 두었다');
+  ok(/pagehide/.test(app), '창을 닫을 때 한꺼번에 거둔다(새지 않게)');
+
+  /* 내려받기는 한 함수로 모은다 — 자리마다 다르게 쓰다 하나만 어긋나는 것을 막는다 */
+  const anchors = [...app.matchAll(/createElement\('a'\)/g)].length;
+  ok(anchors === 1, `앵커를 만드는 자리가 하나다 (${anchors}자리)`, '내려받기는 saveAs 하나로');
+  ok(/function saveAs\(/.test(app), 'saveAs 한 곳을 지난다');
+  ok(!/a\.click\(\); a\.remove\(\)/.test(app),
+    '클릭과 같은 틱에 앵커를 지우지 않는다');
+  ok(/application\/octet-stream/.test(app),
+    '무색 형식으로 넘긴다(브라우저·백신이 손대지 않게)');
+
+  /* 크기를 알려 줘야 담당자가 끊긴 파일을 알아본다 */
+  ok(/바이트/.test(app) && /toLocaleString/.test(app),
+    '산출물의 정확한 바이트 수를 화면에 적는다');
+}
+
+/* ───────── 5. 파일 진단 ─────────
+   「손상된 파일」의 책임 소재를 가르는 도구다. 우리가 만든 파일을 다시 올렸을 때
+   성하다고 나오면 만든 잘못도 옮기다 상한 것도 아니라는 뜻이 된다. */
+head('파일 진단 (diagnose)');
+{
+  const { diagnose } = await import('../app/assets/diagnose.js');
+  const orig = new Uint8Array(fs.readFileSync(
+    path.join(ROOT, 'source/제6기_지역사회보장계획_수립안내_시군구.hwpx')));
+  const tpl = new Uint8Array(fs.readFileSync(path.join(APP, 'data/template.hwpx')));
+
+  const g1 = await diagnose(orig);
+  ok(g1.ok === true, '한글이 쓴 원본을 성하다고 본다');
+  ok(g1.entries.length === 17, `원본 항목 ${g1.entries.length}개를 다 폈다`);
+  const g2 = await diagnose(tpl);
+  ok(g2.ok === true, '배포용 템플릿도 성하다고 본다');
+
+  const cut = orig.slice(0, Math.floor(orig.length * 0.6));
+  const c1 = await diagnose(cut);
+  ok(c1.ok === false, '뒤가 잘린 파일을 잡아낸다');
+  ok(c1.lines.some((l) => /끝 레코드가 없다/.test(l.msg)), '무엇이 없는지 짚는다');
+  ok(c1.lines.some((l) => /내려받다 끊겼|백신|동기화/.test(l.msg)),
+    '어디를 볼지 알려 준다(내려받기·백신·동기화 폴더)');
+
+  const head_ = orig.slice(1000);
+  ok((await diagnose(head_)).ok === false, '앞이 잘린 파일도 잡아낸다');
+
+  const flip = orig.slice();
+  flip[Math.floor(flip.length / 2)] ^= 0xff;
+  const f1 = await diagnose(flip);
+  ok(f1.ok === false, '가운데 한 바이트만 바뀌어도 잡아낸다(CRC 대조)');
+  /* 뒤집힌 자리가 압축 항목이면 「펴지지 않음」, 무압축 항목이면 「내용이 바뀜」이다.
+     둘 다 맞는 판정이므로 어느 쪽이든 **그 항목 이름을 대는지**를 본다 */
+  ok(f1.lines.some((l) => /상한 항목 \d+개 — \S+\((내용이 바뀜|펴지지 않음|크기 어긋남)\)/.test(l.msg)),
+    '상한 항목의 이름과 증상을 댄다', f1.lines.map((l) => l.msg).join(' | ').slice(0, 200));
+  ok(f1.lines.some((l) => /옮기는 사이에 상한/.test(l.msg)), '만든 뒤 상했다고 짚는다');
+
+  ok((await diagnose(new Uint8Array(0))).ok === false, '빈 파일');
+  ok((await diagnose(new Uint8Array(500).fill(65))).ok === false, 'zip 이 아닌 파일');
+
+  /* 우리 판정이 우리 unzip 에 기대면 우리 잘못이 드러나지 않는다 */
+  const src = fs.readFileSync(path.join(APP, 'assets/diagnose.js'), 'utf8');
+  ok(!/from '\.\/zip\.js'/.test(src),
+    '진단은 우리 unzip() 을 쓰지 않는다(읽는 규칙이 우리 것이면 우리 잘못이 안 보인다)');
+  ok(/crc32/.test(src), '내용이 바뀌었는지 CRC 로 대조한다');
+}
+
 console.log(`\n검사 ${checks}건 · 실패 ${fails}건`);
 if (fails) process.exitCode = 1;
