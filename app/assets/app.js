@@ -20,6 +20,7 @@ import { injectRawBlocks, token as layoutToken, usedKeys } from './rawblock.js';
 import { stripFront, wantsFront } from './cover.js';
 import { buildSkillPack, fetchRead, SKILL_NAME } from './skillpack.js';
 import { BUILD, checkStale } from './version.js';
+import { diagnose } from './diagnose.js';
 
 /* ───────── 공용 ───────── */
 const $ = (s) => document.querySelector(s);
@@ -35,14 +36,43 @@ function say(node, text, kind) {
   box.innerHTML = kind === 'busy' ? `<span class="spin"></span>${esc(text)}` : esc(text);
 }
 
-function download(bytes, name) {
-  const blob = new Blob([bytes], { type: 'application/haansofthwpx' });
+/* ───────── 내려받기 ─────────
+   `URL.revokeObjectURL`을 일찍 부르면 **파일이 끊겨 저장된다.**
+   브라우저 설정이 「다운로드 전에 각 파일의 저장 위치 확인」이면 사용자가 폴더를
+   고를 때까지 내려받기가 시작되지 않는다. 그 전에 주소를 거두면 브라우저가 읽을
+   바이트를 잃어 반쪽 파일이 남고, 한글은 「손상된 파일」이라 한다. 폴더를 고르는
+   데는 4초쯤 예사로 걸린다.
+
+   그래서 주소를 넉넉히 살려 두고, 창을 닫을 때 한꺼번에 거둔다. 메모리를 조금 더
+   쓰는 대신 끊긴 파일을 만들지 않는다. */
+const OBJECT_URL_TTL = 10 * 60 * 1000;      // 10분. 저장 위치를 고르고도 남는다
+const liveUrls = new Set();
+
+function objectUrl(blob) {
   const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = name;
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 4000);
+  liveUrls.add(url);
+  setTimeout(() => { URL.revokeObjectURL(url); liveUrls.delete(url); }, OBJECT_URL_TTL);
+  return url;
 }
+addEventListener('pagehide', () => {
+  for (const u of liveUrls) URL.revokeObjectURL(u);
+  liveUrls.clear();
+});
+
+function saveAs(bytes, name, mime) {
+  /* 알려진 형식을 적으면 브라우저·백신이 「도와주려」 손대는 일이 있다.
+     내려받기는 바이트를 그대로 넘기는 것이 목적이라 무색 형식으로 준다 */
+  const url = objectUrl(new Blob([bytes], { type: mime || 'application/octet-stream' }));
+  const a = document.createElement('a');
+  a.href = url; a.download = name; a.rel = 'noopener';
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  /* 같은 틱에 지우면 내려받기가 시작되기도 전에 사라지는 브라우저가 있다 */
+  setTimeout(() => a.remove(), 0);
+}
+
+function download(bytes, name) { saveAs(bytes, name); }
 
 /* 파일명으로 쓸 수 없는 글자를 걷어낸다 */
 const safeName = (s) => String(s).replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, '_').slice(0, 80);
@@ -50,18 +80,21 @@ const safeName = (s) => String(s).replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, 
 /* 산출물 넘기기 — 작업 폴더가 잡혀 있으면 거기 쓰고, 아니면 종전대로 내려받는다.
    돌려주는 값은 화면에 덧붙일 한 줄. */
 async function deliver(bytes, name) {
+  /* 저장된 파일이 온전한지 담당자가 스스로 대조할 수 있게 정확한 바이트 수를 알린다.
+     내려받다 끊기면 이 수와 실제 파일 크기가 어긋난다(파일 속성에서 바로 보인다) */
+  const exact = ` · ${bytes.length.toLocaleString('ko-KR')}바이트`;
   if (ws.current()) {
     try {
       const put = await ws.saveFile(name, bytes);
       await refreshFolder();
-      return ` · 작업 폴더에 저장 (${ws.folderName()}/${put})`;
+      return ` · 작업 폴더에 저장 (${ws.folderName()}/${put})${exact}`;
     } catch (e) {
       download(bytes, name);            // 폴더에 못 쓰면 잃지 말고 내려받는다
-      return ` · 폴더에 쓰지 못해 내려받았다 (${e.message})`;
+      return ` · 폴더에 쓰지 못해 내려받았다 (${e.message})${exact}`;
     }
   }
   download(bytes, name);
-  return '';
+  return exact + ' — 저장된 파일 크기가 이와 다르면 내려받다 끊긴 것이다';
 }
 
 /* ───────── 상태 ───────── */
@@ -560,10 +593,16 @@ function showIssues(listSel, sumSel, cardSel, items) {
   }
   for (const it of items) {
     const li = el('li');
-    li.innerHTML = `<span class="lv ${it.lv}">${it.lv === 'err' ? '오류' : '경고'}</span><span>${esc(it.msg)}</span>`;
+    const label = { err: '오류', warn: '경고', ok: '성함', info: '정보' }[it.lv] || '경고';
+    /* 진단 글은 **굵게**로 요점을 짚는다. 그 표시만 태그로 바꾸고 나머지는 그대로 이스케이프한다 */
+    const body = esc(it.msg).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+    li.innerHTML = `<span class="lv ${it.lv}">${label}</span><span>${body}</span>`;
     ul.appendChild(li);
   }
-  if (sumSel) $(sumSel).textContent = `오류 ${items.filter((i) => i.lv === 'err').length} · 경고 ${items.filter((i) => i.lv === 'warn').length}`;
+  if (sumSel) {
+    const n = (lv) => items.filter((i) => i.lv === lv).length;
+    $(sumSel).textContent = `오류 ${n('err')} · 경고 ${n('warn')}`;
+  }
 }
 
 
@@ -974,12 +1013,7 @@ $('#r-png').onclick = () => {
   if (!all.length) return;
   const base = safeName(regionLabel(S.rOpts));
   const names = [...chartNames((S.rPngs || []).length), ...trendNames((S.tPngs || []).length)];
-  all.forEach((png, i) => {
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([png], { type: 'image/png' }));
-    a.download = `지역여건_${base}_${names[i]}`;
-    document.body.appendChild(a); a.click(); a.remove();
-  });
+  all.forEach((png, i) => saveAs(png, `지역여건_${base}_${names[i]}`, 'image/png'));
 };
 
 $('#r-make').onclick = async () => {
@@ -1027,9 +1061,26 @@ wireDrop('#c-drop', '#c-file', async (files) => {
   const f = files[0]; if (!f) return;
   if (!/\.hwpx$/i.test(f.name)) return say('#c-status', 'hwpx 파일만 올릴 수 있다. .hwp는 한글에서 hwpx로 저장할 것', 'err');
   S.cDoc = new Uint8Array(await f.arrayBuffer()); S.cName = f.name;
-  $('#c-drop').textContent = `${f.name} (${kb(S.cDoc.length)})`;
+  /* 글을 바꿀 때 `#c-drop` 자체를 덮으면 그 안에 든 <input type=file>이 함께 지워져
+     두 번째 파일을 못 올린다. 이름표만 따로 두고 그것만 바꾼다 */
+  $('#c-droplbl').textContent = `${f.name} (${kb(S.cDoc.length)})`;
   $('#c-run').disabled = false;
-  say('#c-status', '올렸다. [점검 실행]을 누른다.', 'ok');
+
+  /* 올리는 즉시 파일이 성한지부터 본다. 「손상된 파일」이라고 나온 문서를 여기 올리면
+     바이트가 상한 것인지, 바이트는 멀쩡한데 한글이 못 여는 것인지가 갈린다 */
+  say('#c-status', '파일 상태 보는 중…', 'busy');
+  let d;
+  try { d = await diagnose(S.cDoc); } catch (e) {
+    say('#c-status', '올렸다. [점검 실행]을 누른다.', 'ok'); return;
+  }
+  showIssues('#c-issues', null, null, d.lines);
+  $('#c-isum').textContent = d.ok ? '파일 성함' : '파일 상함';
+  if (d.fatal) {
+    $('#c-run').disabled = true;
+    say('#c-status', '이 파일은 바이트가 상했다 — 위 사유를 볼 것. 다시 만들어 받아야 한다', 'err');
+  } else {
+    say('#c-status', '파일은 성하다. [점검 실행]을 누르면 서식·계층을 본다.', 'ok');
+  }
 });
 
 $('#c-run').onclick = async () => {
@@ -1297,12 +1348,7 @@ $('#c-skill').onclick = async () => {
   say('#c-sstatus', '꾸러미 묶는 중…', 'busy');
   try {
     const bytes = await buildSkillPack(fetchRead);
-    const blob = new Blob([bytes], { type: 'application/zip' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `${SKILL_NAME}.zip`;
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    saveAs(bytes, `${SKILL_NAME}.zip`, 'application/zip');
     say('#c-sstatus', `${SKILL_NAME}.zip 내려받음 (${kb(bytes.length)}) · [적용 방법]을 눌러 두는 자리를 볼 것`, 'ok');
   } catch (e) {
     say('#c-sstatus', '묶지 못했다 — ' + e.message, 'err');
