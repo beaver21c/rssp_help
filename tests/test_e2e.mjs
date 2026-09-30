@@ -241,7 +241,31 @@ function checkShape(bytes, label) {
   return ok(bad.length === 0, `[${label}] zip 항목 꼴이 템플릿과 같다`, bad.join('\n      '));
 }
 
-const ALWAYS_HASH = await hashOf(['Contents/header.xml', 'Contents/masterpage2.xml']);
+/* 표지를 떼면 `header.xml`의 구역 수 선언(secCnt)만 3 → 1로 바뀐다. 그것 말고는
+   한 바이트도 달라지면 안 된다 — 글꼴·문단모양·자동 번호매기기가 거기 들어 있다.
+   그래서 해시가 아니라 **무엇이 달라졌는지**를 본다. 「해시가 같다」로 두면 이 검사가
+   오히려 버그를 굳힌다(구역을 덜어 내고 선언을 3으로 두면 한글이 문서를 못 연다). */
+const TPL_HEADER = txt(tplParts.get('Contents/header.xml'));
+const SECCNT = /(<hh:head\b[^>]*?\bsecCnt=")(\d+)(")/;
+
+function checkHeader(parts, front, label) {
+  const got = parts.has('Contents/header.xml') ? txt(parts.get('Contents/header.xml')) : null;
+  if (!ok(got !== null, `[${label}] header.xml 이 있다`)) return;
+  const m = SECCNT.exec(got);
+  if (!ok(!!m, `[${label}] header.xml 에 구역 수 선언이 있다`)) return;
+  const secs = [...parts.keys()].filter((k) => /^Contents\/section\d+\.xml$/.test(k)).length;
+  ok(Number(m[2]) === secs,
+    `[${label}] 구역 수 선언(${m[2]})이 실제 구역 수(${secs})와 맞는다`,
+    '어긋나면 한글이 없는 구역을 찾다가 문서를 열지 못한다');
+  /* 선언을 템플릿 값으로 되돌리면 나머지는 한 글자도 다르지 않아야 한다 */
+  const back = got.replace(SECCNT, (_, a, __, c) => a + SECCNT.exec(TPL_HEADER)[2] + c);
+  ok(back === TPL_HEADER,
+    `[${label}] header.xml 에서 달라진 것은 구역 수 선언뿐이다`,
+    front ? '표지를 붙였으면 아예 같아야 한다' : '글꼴·자동 번호매기기가 여기 들어 있다');
+  if (front) ok(got === TPL_HEADER, `[${label}] 표지를 붙였으면 header.xml 이 그대로다`);
+}
+
+const ALWAYS_HASH = await hashOf(['Contents/masterpage2.xml']);
 const FRONT_HASH = await hashOf(['Contents/section0.xml', 'Contents/section1.xml',
   'Contents/masterpage0.xml', 'settings.xml']);
 const DROPPED = ['Contents/section1.xml', 'Contents/masterpage0.xml'];
@@ -256,6 +280,7 @@ const wantsCover = (id) => /^0*1(?:[-_]|$)/.test(String(id || ''));
 
 /** 산출물이 서식을 지켰는지 본다. front 는 표지를 붙인 산출물인가. */
 async function checkKept(parts, front, label) {
+  checkHeader(parts, front, label);
   let keep = true;
   const want = { ...ALWAYS_HASH, ...(front ? FRONT_HASH : {}) };
   for (const [k, h] of Object.entries(want)) {

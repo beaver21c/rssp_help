@@ -63,6 +63,12 @@ jobs:
           node tests/test_context.mjs
           node tests/test_gemini.mjs
 
+      # 우리 판독기로만 검사하면 우리 잘못이 안 보인다. 바깥 판독기로 실제로 열어 본다.
+      - name: 바깥 판독기로 열어 보기
+        run: |
+          pip install python-hwpx
+          python3 tests/test_open.py
+
       - name: 브라우저 통합 시험 (65개 마디)
         run: node tests/test_e2e.mjs
 
