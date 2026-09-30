@@ -9,10 +9,16 @@
  * 표지가 있어야 하지만, 뒤 장이나 지역여건 분석 절에까지 표지가 딸려 나오면
  * 담당자가 한글에서 매번 지워야 한다.
  *
- * 그래서 **앞 두 구역과 그 바탕쪽을 통째로 덜어 낸다.** `header.xml`은 손대지 않으므로
- * 글꼴·자동 번호매기기·서식은 그대로다. 남는 본문 구역은 이름을 `section0.xml`로
- * 앞당겨 번호가 0부터 이어지게 하고, 매니페스트(`content.hpf`)와 메타(`container.rdf`)를
- * 그에 맞춰 다시 쓴다.
+ * 그래서 **앞 두 구역과 그 바탕쪽을 통째로 덜어 낸다.** 남는 본문 구역은 이름을
+ * `section0.xml`로 앞당겨 번호가 0부터 이어지게 하고, 매니페스트(`content.hpf`)와
+ * 메타(`container.rdf`)를 그에 맞춰 다시 쓴다.
+ *
+ * **`header.xml`의 `secCnt`도 함께 고쳐야 한다.**
+ * 이 도구의 원칙은 「`header.xml`을 한 바이트도 건드리지 않는다」이지만 구역을 덜어
+ * 낼 때만은 예외다. `<hh:head … secCnt="3">`은 **구역이 셋이라는 선언**이고 한글은 그
+ * 수만큼 구역을 찾는다. 구역을 하나만 남기고 선언을 3으로 두면 한글은 문서를 열지
+ * 못하고 「손상된 파일」이라 한다. 고치는 것은 그 숫자 하나뿐이므로 글꼴·문단모양·
+ * 자동 번호매기기는 그대로 남는다.
  */
 "use strict";
 
@@ -64,6 +70,20 @@ function fixSettings(xml) {
     '<ha:CaretPosition listIDRef="0" paraIDRef="0" pos="0"/>');
 }
 
+/**
+ * `header.xml`의 구역 수 선언을 남은 수에 맞춘다.
+ *
+ * 이 파일에서 고치는 것은 `<hh:head>`의 `secCnt` 속성값 **하나뿐**이다. 글꼴·문단모양·
+ * 스타일·자동 번호매기기는 한 글자도 건드리지 않는다.
+ * 선언이 실제 구역 수보다 크면 한글이 없는 구역을 찾다가 문서를 열지 못한다.
+ */
+export function fixSecCnt(xml, count) {
+  const m = /(<hh:head\b[^>]*?\bsecCnt=")(\d+)(")/.exec(xml);
+  if (!m) throw new Error('header.xml에서 구역 수(secCnt) 선언을 찾지 못해 표지를 떼지 못했다.');
+  if (Number(m[2]) === count) return xml;
+  return xml.slice(0, m.index) + m[1] + count + m[3] + xml.slice(m.index + m[0].length);
+}
+
 /** `container.rdf`에서 덜어 낸 구역의 선언을 빼고 본문 구역 경로를 고친다. */
 function fixRdf(xml, bodyPath, newPath) {
   let out = xml;
@@ -102,7 +122,10 @@ export async function stripFront(bytes, bodyPath) {
     if (DROP.includes(name)) continue;
     const to = name === body ? NEW : name;
     if (src.has(name)) frames.set(to, src.get(name));
-    if (name === 'Contents/content.hpf') {
+    if (name === 'Contents/header.xml') {
+      /* 남는 구역은 본문 하나뿐이다. 선언을 그 수에 맞춘다 */
+      kept.set(name, enc(fixSecCnt(dec(data), 1)));
+    } else if (name === 'Contents/content.hpf') {
       kept.set(name, enc(fixHpf(dec(data), body, NEW, NEW_ID)));
     } else if (name === 'META-INF/container.rdf') {
       kept.set(name, enc(fixRdf(dec(data), body, NEW)));

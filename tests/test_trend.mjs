@@ -249,11 +249,22 @@ head('표지 떼기 (cover.js)');
   ok(!after.has('Contents/section1.xml'), '표지 구역(section1)이 사라졌다');
   ok(!after.has('Contents/section2.xml'), '본문 구역은 section0 으로 앞당겨졌다');
   ok(after.has('Contents/section0.xml'), 'section0 이 본문 구역이다');
-  ok(after.has('Contents/header.xml'), 'header.xml 은 손대지 않는다(글꼴·자동 번호매기기)');
+  ok(after.has('Contents/header.xml'), 'header.xml 이 그대로 있다');
 
-  const headBefore = Buffer.from(before.get('Contents/header.xml'));
-  const headAfter = Buffer.from(after.get('Contents/header.xml'));
-  ok(headBefore.equals(headAfter), 'header.xml 바이트가 한 글자도 바뀌지 않았다');
+  /* header.xml 에서 바뀌어도 되는 것은 **구역 수 선언 하나뿐**이다.
+     구역을 덜어 내고 선언을 3으로 두면 한글이 없는 구역을 찾다가 문서를 열지 못한다.
+     「한 글자도 안 바뀐다」로 두면 이 검사가 오히려 그 버그를 굳힌다. */
+  const SECCNT = /(<hh:head\b[^>]*?\bsecCnt=")(\d+)(")/;
+  const headBefore = new TextDecoder().decode(before.get('Contents/header.xml'));
+  const headAfter = new TextDecoder().decode(after.get('Contents/header.xml'));
+  const mBefore = SECCNT.exec(headBefore);
+  const mAfter = SECCNT.exec(headAfter);
+  ok(mBefore && mAfter, 'header.xml 에 구역 수 선언이 있다');
+  ok(mAfter && mAfter[2] === '1',
+    `구역 수 선언이 남은 구역 수(1)로 바뀌었다 (${mAfter && mAfter[2]})`,
+    '어긋나면 한글이 문서를 열지 못한다');
+  ok(headAfter.replace(SECCNT, (_, a, __, c) => a + mBefore[2] + c) === headBefore,
+    'header.xml 에서 달라진 것은 구역 수 선언뿐이다(글꼴·자동 번호매기기 그대로)');
 
   const bodyBefore = Buffer.from(before.get(form.section));
   const bodyAfter = Buffer.from(after.get('Contents/section0.xml'));
